@@ -1,4 +1,5 @@
 import secrets
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -278,9 +279,12 @@ def create_reservation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Bloquea la fila del pack hasta el commit: si dos personas reservan
+    # a la vez, la segunda espera y ve el stock ya descontado.
     pack = (
         db.query(FoodPack)
         .filter(FoodPack.id == data.food_pack_id)
+        .with_for_update()
         .first()
     )
 
@@ -306,6 +310,13 @@ def create_reservation(
         raise HTTPException(
             status_code=400,
             detail="El pack ya no está disponible",
+        )
+
+    # Los horarios se guardan en UTC sin zona horaria (ver routers/packs.py).
+    if pack.pickup_end <= datetime.utcnow():
+        raise HTTPException(
+            status_code=400,
+            detail="El horario de retiro de este pack ya terminó",
         )
 
     if data.quantity > pack.quantity:
@@ -383,11 +394,14 @@ def cancel_reservation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Bloquea reserva y pack: un doble toque en "Cancelar" no debe
+    # devolver el stock dos veces.
     row = (
         db.query(Reservation, FoodPack, Business)
         .join(FoodPack, Reservation.food_pack_id == FoodPack.id)
         .join(Business, FoodPack.business_id == Business.id)
         .filter(Reservation.id == reservation_id)
+        .with_for_update(of=(Reservation, FoodPack))
         .first()
     )
 
@@ -459,6 +473,7 @@ def validate_reservation(
     reservation = (
         db.query(Reservation)
         .filter(Reservation.reservation_code == reservation_code)
+        .with_for_update()
         .first()
     )
 

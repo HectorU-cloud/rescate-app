@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class FoodPackBase(BaseModel):
@@ -15,8 +15,20 @@ class FoodPackBase(BaseModel):
     image_url: str | None = None
 
 
+def _check_image_url(value: str | None) -> str | None:
+    # Import local para evitar dependencias circulares al cargar los schemas.
+    from routers.uploads import is_valid_pack_image_url
+
+    if not is_valid_pack_image_url(value):
+        raise ValueError("image_url debe ser una foto subida con /api/uploads/pack-image")
+    return value
+
+
 class FoodPackCreate(FoodPackBase):
-    pass
+    @field_validator("image_url")
+    @classmethod
+    def validate_image_url(cls, value):
+        return _check_image_url(value)
 
 
 # 👇 NUEVO: todos los campos opcionales para actualización parcial
@@ -31,6 +43,11 @@ class FoodPackUpdate(BaseModel):
     pickup_end: datetime | None = None
     image_url: str | None = None
     status: str | None = None  # available, sold_out, paused, expired
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_image_url(cls, value):
+        return _check_image_url(value)
 
 
 class FoodPackResponse(BaseModel):

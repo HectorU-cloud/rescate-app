@@ -238,6 +238,7 @@ def update_pack(
     pack = (
         db.query(FoodPack)
         .filter(FoodPack.id == pack_id)
+        .with_for_update()
         .first()
     )
 

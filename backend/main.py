@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from database import engine, Base
 
@@ -16,6 +17,7 @@ from routers.auth import router as auth_router
 from routers.reservations import router as reservations_router
 from models.device_token import DeviceToken  
 from routers.notifications import router as notifications_router  
+from routers.uploads import router as uploads_router, ensure_upload_dirs, UPLOADS_DIR
 
 
 app = FastAPI(
@@ -43,6 +45,11 @@ app.include_router(businesses_router)
 app.include_router(auth_router)
 app.include_router(reservations_router)
 app.include_router(notifications_router)
+app.include_router(uploads_router)
+
+# Fotos de los packs (se sirven en /uploads/packs/<archivo>.jpg)
+ensure_upload_dirs()
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 
 @app.get("/")

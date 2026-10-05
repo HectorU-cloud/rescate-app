@@ -1,5 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+import os
+import secrets
+
+from passlib.context import CryptContext
+
 from database import SessionLocal
 from models.user import User
 from models.category import Category
@@ -7,8 +12,13 @@ from models.business import Business
 from models.food_pack import FoodPack
 
 
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
 def seed():
     db = SessionLocal()
+    demo_password = os.getenv("SEED_DEMO_PASSWORD") or secrets.token_urlsafe(9)
+    demo_hash = pwd_context.hash(demo_password)
 
     try:
         print("🌱 Iniciando seed de Rescate...")
@@ -74,16 +84,19 @@ def seed():
                 user = User(
                     name=data["name"],
                     email=data["email"],
-                    password_hash="demo",
+                    password_hash=demo_hash,
                     is_business=True,
                     is_active=True,
                 )
                 db.add(user)
                 db.flush()
 
+            elif user.password_hash == "demo":
+                user.password_hash = demo_hash
             users[data["email"]] = user
 
         print("✅ Usuarios demo listos")
+        print(f"   Contraseña demo: {demo_password}")
 
         # -------------------------------------------------
         # NEGOCIOS
