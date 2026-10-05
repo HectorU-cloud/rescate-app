@@ -1,0 +1,42 @@
+﻿# === SECRETOS ===
+.env
+*.env
+firebase-service-account.json
+google-services.json
+
+# === PYTHON (backend) ===
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.log
+
+# === FLUTTER (mobile) ===
+mobile/build/
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.packages
+mobile/.pub-cache/
+mobile/.pub/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/ios/Pods/
+mobile/ios/.symlinks/
+mobile/*.iml
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === SISTEMA ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+mobile/android/build/
