@@ -1,5 +1,7 @@
 import 'package:latlong2/latlong.dart';
 
+import '../services/api_service.dart';
+
 class FoodPack {
   final String id;
   final String business;
@@ -16,6 +18,9 @@ class FoodPack {
   final LatLng? location;
   final DateTime? createdAt;
 
+  /// URL completa de la foto (o null si el pack no tiene foto).
+  final String? imageUrl;
+
   const FoodPack({
     required this.id,
     required this.business,
@@ -31,6 +36,7 @@ class FoodPack {
     this.status = 'available',
     this.location,
     this.createdAt,
+    this.imageUrl,
   });
 
   /// ¿Fue publicado hoy?
@@ -61,6 +67,7 @@ class FoodPack {
       status: status,
       location: location,
       createdAt: createdAt,
+      imageUrl: imageUrl,
     );
   }
 
@@ -112,6 +119,9 @@ class FoodPack {
       status: json['status']?.toString() ?? 'available',
       location: location,
       createdAt: created,
+      imageUrl: ApiService.resolveImageUrl(
+        json['image_url']?.toString(),
+      ),
     );
   }
 }

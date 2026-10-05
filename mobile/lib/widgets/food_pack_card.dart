@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/food_pack.dart';
+import 'pack_image.dart';
 
 class FoodPackCard extends StatelessWidget {
   final FoodPack pack;
@@ -24,18 +25,12 @@ class FoodPackCard extends StatelessWidget {
         padding: const EdgeInsets.all(14),
         child: Row(
           children: [
-            Container(
+            PackImage(
+              imageUrl: pack.imageUrl,
               width: 90,
               height: 110,
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8F3F0),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Icon(
-                Icons.bakery_dining,
-                size: 42,
-                color: Theme.of(context).colorScheme.primary,
-              ),
+              borderRadius: 16,
+              iconSize: 42,
             ),
 
             const SizedBox(width: 14),

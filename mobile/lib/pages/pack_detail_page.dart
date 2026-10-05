@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/food_pack.dart';
+import '../widgets/pack_image.dart';
 import 'reservation_page.dart';
 import '../models/reservation.dart';
 
@@ -41,21 +42,12 @@ class PackDetailPage extends StatelessWidget {
                     CrossAxisAlignment.start,
                 children: [
                   // Imagen
-                  Container(
+                  PackImage(
+                    imageUrl: pack.imageUrl,
                     width: double.infinity,
                     height: 230,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE8F3F0),
-                      borderRadius:
-                          BorderRadius.circular(24),
-                    ),
-                    child: Icon(
-                      Icons.bakery_dining,
-                      size: 90,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .primary,
-                    ),
+                    borderRadius: 24,
+                    iconSize: 90,
                   ),
 
                   const SizedBox(height: 24),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/food_pack.dart';
 import '../services/api_service.dart';
+import '../widgets/pack_image.dart';
 import 'business_create_pack_page.dart';
 import 'business_edit_pack_page.dart';
 
@@ -358,18 +359,12 @@ class _BusinessPacksPageState extends State<BusinessPacksPage> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
+              PackImage(
+                imageUrl: pack.imageUrl,
                 width: 58,
                 height: 58,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE8F3F0),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Icon(
-                  Icons.bakery_dining,
-                  color: Theme.of(context).colorScheme.primary,
-                  size: 30,
-                ),
+                borderRadius: 16,
+                iconSize: 30,
               ),
               const SizedBox(width: 14),
               Expanded(

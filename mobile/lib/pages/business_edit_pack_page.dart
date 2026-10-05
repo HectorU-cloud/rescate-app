@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../models/food_pack.dart';
 import '../services/api_service.dart';
+import '../widgets/pack_image_picker.dart';
 
 class BusinessEditPackPage extends StatefulWidget {
   final FoodPack pack;
@@ -18,6 +20,8 @@ class BusinessEditPackPage extends StatefulWidget {
 
 class _BusinessEditPackPageState extends State<BusinessEditPackPage> {
   final _formKey = GlobalKey<FormState>();
+
+  XFile? _pickedImage;
 
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
@@ -196,6 +200,13 @@ class _BusinessEditPackPageState extends State<BusinessEditPackPage> {
     });
 
     try {
+      // Solo se sube si eligio una foto nueva; si no, se conserva la actual.
+      String? imageUrl;
+
+      if (_pickedImage != null) {
+        imageUrl = await _apiService.uploadPackImage(_pickedImage!);
+      }
+
       await _apiService.updatePack(
         packId: int.parse(widget.pack.id),
         categoryId: _selectedCategoryId,
@@ -208,6 +219,7 @@ class _BusinessEditPackPageState extends State<BusinessEditPackPage> {
         quantity: quantity,
         pickupStart: pickupStart,
         pickupEnd: pickupEnd,
+        imageUrl: imageUrl,
       );
 
       if (!mounted) return;
@@ -249,6 +261,13 @@ class _BusinessEditPackPageState extends State<BusinessEditPackPage> {
                         ),
                         const SizedBox(height: 20),
                       ],
+
+                      _label('Foto del pack'),
+                      PackImagePicker(
+                        existingImageUrl: widget.pack.imageUrl,
+                        onChanged: (file) => _pickedImage = file,
+                      ),
+                      const SizedBox(height: 20),
 
                       _label('Título del pack *'),
                       TextFormField(

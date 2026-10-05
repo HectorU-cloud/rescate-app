@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 
 import '../models/food_pack.dart';
 import '../models/reservation.dart';
@@ -8,7 +9,23 @@ import '../models/user.dart';
 import 'session_service.dart';
 
 class ApiService {
-  static const String baseUrl = 'http://192.168.100.23:8000';
+  // URL del backend. Se puede cambiar al compilar/ejecutar sin tocar el codigo:
+  //   flutter run --dart-define=API_BASE_URL=https://api.tudominio.com
+  // Por defecto apunta al emulador de Android (10.0.2.2 = tu PC).
+  static const String baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://10.0.2.2:8000',
+  );
+
+  /// Convierte la ruta que devuelve el servidor ("/uploads/packs/x.jpg")
+  /// en una URL completa que Image.network pueda abrir.
+  static String? resolveImageUrl(String? path) {
+    if (path == null || path.isEmpty) return null;
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return path;
+    }
+    return '$baseUrl$path';
+  }
 
   final SessionService _sessionService = SessionService();
 
@@ -273,6 +290,40 @@ class ApiService {
     return data
         .map((item) => FoodPack.fromJson(item as Map<String, dynamic>))
         .toList();
+  }
+
+  /// Sube la foto de un pack y devuelve la ruta para guardarla en
+  /// `image_url` al crear o editar el pack.
+  Future<String> uploadPackImage(XFile file) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/api/uploads/pack-image'),
+    );
+
+    final headers = await _headers();
+    headers.remove('Content-Type'); // lo define el multipart
+    request.headers.addAll(headers);
+
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        await file.readAsBytes(),
+        filename: file.name.isEmpty ? 'foto.jpg' : file.name,
+      ),
+    );
+
+    final streamed = await request.send().timeout(
+          const Duration(seconds: 30),
+        );
+    final response = await http.Response.fromStream(streamed);
+
+    if (response.statusCode != 200) {
+      _handleError(response);
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+    return data['image_url'] as String;
   }
 
   Future<Map<String, dynamic>> createPack({

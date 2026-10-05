@@ -31,10 +31,77 @@ class _HomePageState extends State<HomePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
+  final TextEditingController _searchController =
+      TextEditingController();
+  String _searchQuery = '';
+  String? _selectedCategory;
+
   @override
   void initState() {
     super.initState();
     _loadPacks();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// Minusculas y sin tildes, para que "panaderia" encuentre "Panadería".
+  String _normalize(String text) {
+    const from = 'áàäâéèëêíìïîóòöôúùüûñ';
+    const to = 'aaaaeeeeiiiioooouuuun';
+    var result = text.toLowerCase();
+    for (var i = 0; i < from.length; i++) {
+      result = result.replaceAll(from[i], to[i]);
+    }
+    return result.trim();
+  }
+
+  bool get _hasActiveFilters =>
+      _searchQuery.trim().isNotEmpty ||
+      _selectedCategory != null;
+
+  List<FoodPack> get _filteredPacks {
+    final query = _normalize(_searchQuery);
+    final category = _selectedCategory == null
+        ? null
+        : _normalize(_selectedCategory!);
+
+    return _packs.where((pack) {
+      if (category != null &&
+          _normalize(pack.category) != category) {
+        return false;
+      }
+
+      if (query.isEmpty) return true;
+
+      final haystack = _normalize(
+        '${pack.title} ${pack.business} '
+        '${pack.description} ${pack.category} '
+        '${pack.address}',
+      );
+
+      return query
+          .split(RegExp(r'\s+'))
+          .every(haystack.contains);
+    }).toList();
+  }
+
+  void _clearFilters() {
+    _searchController.clear();
+    setState(() {
+      _searchQuery = '';
+      _selectedCategory = null;
+    });
+  }
+
+  void _toggleCategory(String name) {
+    setState(() {
+      _selectedCategory =
+          _selectedCategory == name ? null : name;
+    });
   }
 
   Future<void> _loadPacks() async {
@@ -246,13 +313,30 @@ class _HomePageState extends State<HomePage> {
 
               // SEARCH
               TextField(
+                controller: _searchController,
+                textInputAction: TextInputAction.search,
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value;
+                  });
+                },
                 decoration: InputDecoration(
                   hintText:
                       'Buscar comida, negocios...',
                   prefixIcon:
                       const Icon(Icons.search),
-                  suffixIcon:
-                      const Icon(Icons.tune),
+                  suffixIcon: _searchQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Borrar búsqueda',
+                          icon: const Icon(Icons.close),
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() {
+                              _searchQuery = '';
+                            });
+                          },
+                        ),
                 ),
               ),
 
@@ -313,11 +397,12 @@ class _HomePageState extends State<HomePage> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  TextButton(
-                    onPressed: () {},
-                    child:
-                        const Text('Ver todos'),
-                  ),
+                  if (_hasActiveFilters)
+                    TextButton(
+                      onPressed: _clearFilters,
+                      child:
+                          const Text('Ver todos'),
+                    ),
                 ],
               ),
 
@@ -444,8 +529,62 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
+    final packs = _filteredPacks;
+
+    if (packs.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(
+          vertical: 50,
+        ),
+        child: Center(
+          child: Column(
+            children: [
+              Container(
+                width: 80,
+                height: 80,
+                decoration:
+                    const BoxDecoration(
+                  color: Color(0xFFE8F3F0),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.search_off,
+                  size: 40,
+                  color: Color(0xFF0F766E),
+                ),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Sin resultados',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight:
+                      FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Prueba con otra palabra o categoría.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton(
+                onPressed: _clearFilters,
+                child: const Text(
+                  'Quitar filtros',
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Column(
-      children: _packs.map((pack) {
+      children: packs.map((pack) {
         return Padding(
           padding:
               const EdgeInsets.only(
@@ -464,39 +603,48 @@ class _HomePageState extends State<HomePage> {
     IconData icon,
     String title,
   ) {
-    return Container(
-      width: 82,
-      margin:
-          const EdgeInsets.only(right: 12),
-      child: Column(
-        children: [
-          Container(
-            width: 58,
-            height: 58,
-            decoration: BoxDecoration(
-              color:
-                  const Color(0xFFE8F3F0),
-              borderRadius:
-                  BorderRadius.circular(18),
+    final selected = _selectedCategory == title;
+
+    return GestureDetector(
+      onTap: () => _toggleCategory(title),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: 82,
+        margin:
+            const EdgeInsets.only(right: 12),
+        child: Column(
+          children: [
+            Container(
+              width: 58,
+              height: 58,
+              decoration: BoxDecoration(
+                color: selected
+                    ? const Color(0xFF0F766E)
+                    : const Color(0xFFE8F3F0),
+                borderRadius:
+                    BorderRadius.circular(18),
+              ),
+              child: Icon(
+                icon,
+                color: selected
+                    ? Colors.white
+                    : const Color(0xFF0F766E),
+                size: 27,
+              ),
             ),
-            child: Icon(
-              icon,
-              color:
-                  const Color(0xFF0F766E),
-              size: 27,
+            const SizedBox(height: 7),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: selected
+                    ? FontWeight.bold
+                    : FontWeight.w600,
+              ),
             ),
-          ),
-          const SizedBox(height: 7),
-          Text(
-            title,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight:
-                  FontWeight.w600,
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

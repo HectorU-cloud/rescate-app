@@ -4,6 +4,8 @@
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Necesitamos tu ubicación para mostrarte los packs más cercanos</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Necesitamos acceder a tus fotos para que puedas poner una imagen en tus packs</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Necesitamos la cámara para escanear los códigos QR de tus clientes</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>

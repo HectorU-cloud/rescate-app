@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../services/api_service.dart';
+import '../widgets/pack_image_picker.dart';
 
 class BusinessCreatePackPage extends StatefulWidget {
   const BusinessCreatePackPage({super.key});
@@ -20,6 +22,8 @@ class _BusinessCreatePackPageState extends State<BusinessCreatePackPage> {
   final _quantityController = TextEditingController();
 
   final ApiService _apiService = ApiService();
+
+  XFile? _pickedImage;
 
   List<Map<String, dynamic>> _categories = [];
   int? _selectedCategoryId;
@@ -154,6 +158,13 @@ class _BusinessCreatePackPageState extends State<BusinessCreatePackPage> {
     });
 
     try {
+      // Si eligio una foto, se sube primero y se guarda su ruta en el pack.
+      String? imageUrl;
+
+      if (_pickedImage != null) {
+        imageUrl = await _apiService.uploadPackImage(_pickedImage!);
+      }
+
       await _apiService.createPack(
         categoryId: _selectedCategoryId!,
         title: _titleController.text.trim(),
@@ -165,6 +176,7 @@ class _BusinessCreatePackPageState extends State<BusinessCreatePackPage> {
         quantity: quantity,
         pickupStart: pickupStart,
         pickupEnd: pickupEnd,
+        imageUrl: imageUrl,
       );
 
       if (!mounted) return;
@@ -206,6 +218,13 @@ class _BusinessCreatePackPageState extends State<BusinessCreatePackPage> {
                         ),
                         const SizedBox(height: 20),
                       ],
+
+                      // Foto
+                      _label('Foto del pack'),
+                      PackImagePicker(
+                        onChanged: (file) => _pickedImage = file,
+                      ),
+                      const SizedBox(height: 20),
 
                       // Título
                       _label('Título del pack *'),
