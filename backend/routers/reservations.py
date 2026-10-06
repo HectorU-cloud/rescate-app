@@ -10,6 +10,12 @@ from models.business import Business
 from models.food_pack import FoodPack
 from models.reservation import Reservation
 from models.user import User
+from reservation_rules import (
+    NO_SHOW_LIMIT,
+    NO_SHOW_WINDOW_DAYS,
+    expire_overdue_reservations,
+    is_blocked_for_no_shows,
+)
 from schemas.reservation import (
     ReservationCreate,
     ReservationResponse,
@@ -115,6 +121,8 @@ def get_reservations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    expire_overdue_reservations(db)
+
     rows = (
         db.query(Reservation, FoodPack, Business)
         .join(FoodPack, Reservation.food_pack_id == FoodPack.id)
@@ -144,6 +152,8 @@ def get_received_reservations(
     db: Session = Depends(get_db),
 ):
     business = _get_business_of_user(current_user, db)
+
+    expire_overdue_reservations(db)
 
     rows = (
         db.query(Reservation, FoodPack, Business, User)
@@ -279,6 +289,19 @@ def create_reservation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Quien dejo varias reservas sin retirar queda bloqueado un tiempo.
+    expire_overdue_reservations(db)
+
+    if is_blocked_for_no_shows(db, current_user.id):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Tienes {NO_SHOW_LIMIT} reservas sin retirar en los últimos "
+                f"{NO_SHOW_WINDOW_DAYS} días, por eso no puedes reservar "
+                "por ahora. Retira a tiempo o cancela con anticipación."
+            ),
+        )
+
     # Bloquea la fila del pack hasta el commit: si dos personas reservan
     # a la vez, la segunda espera y ve el stock ya descontado.
     pack = (
@@ -470,6 +493,8 @@ def validate_reservation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    expire_overdue_reservations(db)
+
     reservation = (
         db.query(Reservation)
         .filter(Reservation.reservation_code == reservation_code)
@@ -499,6 +524,12 @@ def validate_reservation(
         raise HTTPException(
             status_code=403,
             detail="No autorizado para validar esta reserva",
+        )
+
+    if reservation.status == "no_show":
+        raise HTTPException(
+            status_code=400,
+            detail="Esta reserva venció: no se retiró dentro del horario",
         )
 
     if reservation.status == "picked_up":

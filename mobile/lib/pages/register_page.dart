@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/user.dart';
 import '../services/api_service.dart';
@@ -29,6 +30,7 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
   bool _isBusiness = false;
+  bool _acceptedTerms = false;
   String? _errorMessage;
 
   @override
@@ -42,6 +44,14 @@ class _RegisterPageState extends State<RegisterPage> {
 
   Future<void> _register() async {
     if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    if (!_acceptedTerms) {
+      setState(() {
+        _errorMessage =
+            'Debes aceptar los términos y la política de privacidad para crear tu cuenta.';
+      });
       return;
     }
 
@@ -323,6 +333,44 @@ class _RegisterPageState extends State<RegisterPage> {
                       ),
                     ],
                   ),
+                ),
+
+                const SizedBox(height: 12),
+
+                CheckboxListTile(
+                  value: _acceptedTerms,
+                  onChanged: _isLoading
+                      ? null
+                      : (value) {
+                          setState(() {
+                            _acceptedTerms = value ?? false;
+                            if (_acceptedTerms) _errorMessage = null;
+                          });
+                        },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text(
+                    'Acepto los términos y condiciones y la política de privacidad',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                ),
+                Row(
+                  children: [
+                    TextButton(
+                      onPressed: () => launchUrl(
+                        Uri.parse(ApiService.termsUrl),
+                        mode: LaunchMode.externalApplication,
+                      ),
+                      child: const Text('Ver términos'),
+                    ),
+                    TextButton(
+                      onPressed: () => launchUrl(
+                        Uri.parse(ApiService.privacyUrl),
+                        mode: LaunchMode.externalApplication,
+                      ),
+                      child: const Text('Ver privacidad'),
+                    ),
+                  ],
                 ),
 
                 if (_errorMessage != null) ...[

@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 
 import firebase_admin
@@ -13,18 +15,35 @@ SERVICE_ACCOUNT_PATH = os.path.join(
 _firebase_app = None
 
 
+def _load_credentials():
+    """Credenciales de Firebase.
+
+    En un hosting donde no se puede subir el archivo, pega su contenido en la
+    variable FIREBASE_CREDENTIALS_JSON (el JSON tal cual, o codificado en
+    base64). Si no existe, se usa el archivo firebase-service-account.json.
+    """
+    raw = os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip()
+
+    if raw:
+        if not raw.startswith("{"):
+            raw = base64.b64decode(raw).decode("utf-8")
+
+        return credentials.Certificate(json.loads(raw))
+
+    if os.path.exists(SERVICE_ACCOUNT_PATH):
+        return credentials.Certificate(SERVICE_ACCOUNT_PATH)
+
+    raise HTTPException(
+        status_code=500,
+        detail="Faltan las credenciales de Firebase (archivo o FIREBASE_CREDENTIALS_JSON)",
+    )
+
+
 def _get_app():
     global _firebase_app
 
     if _firebase_app is None:
-        if not os.path.exists(SERVICE_ACCOUNT_PATH):
-            raise HTTPException(
-                status_code=500,
-                detail="Archivo firebase-service-account.json no encontrado",
-            )
-
-        cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-        _firebase_app = firebase_admin.initialize_app(cred)
+        _firebase_app = firebase_admin.initialize_app(_load_credentials())
 
     return _firebase_app
 

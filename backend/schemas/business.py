@@ -32,6 +32,7 @@ class BusinessStats(BaseModel):
     completed_reservations: int
     pending_reservations: int
     cancelled_reservations: int
+    no_show_reservations: int = 0
 
     total_revenue: float
     total_saved: float

@@ -8,6 +8,10 @@ from models.business import Business
 from models.food_pack import FoodPack
 from models.reservation import Reservation
 from models.user import User
+from reservation_rules import (
+    INACTIVE_STATUSES,
+    expire_overdue_reservations,
+)
 from schemas.business import (
     BusinessCreate,
     BusinessResponse,
@@ -103,6 +107,8 @@ def get_my_stats(
     sold_out_packs = sum(1 for p in all_packs if p.status == "sold_out")
     paused_packs = sum(1 for p in all_packs if p.status == "paused")
 
+    expire_overdue_reservations(db)
+
     reservations = (
         db.query(Reservation)
         .join(FoodPack, Reservation.food_pack_id == FoodPack.id)
@@ -120,9 +126,13 @@ def get_my_stats(
     cancelled_reservations = sum(
         1 for r in reservations if r.status == "cancelled"
     )
+    no_show_reservations = sum(
+        1 for r in reservations if r.status == "no_show"
+    )
 
+    # Cuentan como venta solo las reservas que no se cancelaron ni vencieron.
     active_reservations = [
-        r for r in reservations if r.status != "cancelled"
+        r for r in reservations if r.status not in INACTIVE_STATUSES
     ]
 
     total_revenue = sum(
@@ -169,6 +179,7 @@ def get_my_stats(
         completed_reservations=completed_reservations,
         pending_reservations=pending_reservations,
         cancelled_reservations=cancelled_reservations,
+        no_show_reservations=no_show_reservations,
         total_revenue=round(total_revenue, 2),
         total_saved=round(total_saved, 2),
         today_reservations=today_reservations,

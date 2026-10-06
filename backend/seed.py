@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import os
 import secrets
+import sys
 
 from passlib.context import CryptContext
 
@@ -15,7 +16,7 @@ from models.food_pack import FoodPack
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def seed():
+def seed(solo_categorias: bool = False):
     db = SessionLocal()
     demo_password = os.getenv("SEED_DEMO_PASSWORD") or secrets.token_urlsafe(9)
     demo_hash = pwd_context.hash(demo_password)
@@ -55,6 +56,12 @@ def seed():
             categories[name] = category
 
         print("✅ Categorías listas")
+
+        # En produccion: python seed.py --solo-categorias (sin usuarios demo)
+        if solo_categorias:
+            db.commit()
+            print("Listo: solo se crearon las categorías, sin datos demo.")
+            return
 
         # -------------------------------------------------
         # USUARIOS DEMO
@@ -256,4 +263,4 @@ def seed():
 
 
 if __name__ == "__main__":
-    seed()
+    seed(solo_categorias="--solo-categorias" in sys.argv)

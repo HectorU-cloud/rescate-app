@@ -5,6 +5,7 @@ import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import 'business_home_page.dart';
+import 'forgot_password_page.dart';
 import 'home_page.dart';
 import 'register_page.dart';
 
@@ -195,6 +196,25 @@ class _LoginPageState extends State<LoginPage> {
                       }
                       return null;
                     },
+                  ),
+
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: _isLoading
+                          ? null
+                          : () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => ForgotPasswordPage(
+                                    initialEmail:
+                                        _emailController.text.trim(),
+                                  ),
+                                ),
+                              );
+                            },
+                      child: const Text('¿Olvidaste tu contraseña?'),
+                    ),
                   ),
 
                   if (_errorMessage != null) ...[

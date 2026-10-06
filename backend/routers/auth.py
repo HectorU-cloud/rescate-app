@@ -1,13 +1,32 @@
-from fastapi import APIRouter, Depends, HTTPException
+import hashlib
+import hmac
+import os
+import secrets
+from datetime import datetime, timedelta
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 
 from database import get_db
+from models.business import Business
+from models.device_token import DeviceToken
+from models.food_pack import FoodPack
+from models.password_reset import PasswordReset
+from models.reservation import Reservation
 from models.user import User
+from email_service import send_password_reset_code
+from rate_limit import client_ip, forgot_by_ip, login_by_account, login_by_ip
+from reservation_rules import expire_overdue_reservations
+from routers.uploads import delete_pack_image_file
 from schemas.auth import (
     RegisterRequest,
     LoginRequest,
     AuthResponse,
+    DeleteAccountRequest,
+    ForgotPasswordRequest,
+    MessageResponse,
+    ResetPasswordRequest,
 )
 from security import create_access_token, get_current_user
 
@@ -85,8 +104,19 @@ def register(
 )
 def login(
     data: LoginRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    ip = client_ip(request)
+    account_key = f"{data.email.lower()}|{ip}"
+
+    # Demasiados intentos fallidos: se frena aunque la clave ahora sea buena.
+    if login_by_account.is_blocked(account_key) or login_by_ip.is_blocked(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
+        )
+
     user = (
         db.query(User)
         .filter(User.email == data.email)
@@ -94,6 +124,8 @@ def login(
     )
 
     if not user:
+        login_by_account.hit(account_key)
+        login_by_ip.hit(ip)
         raise HTTPException(
             status_code=401,
             detail="Correo o contraseña incorrectos",
@@ -109,10 +141,14 @@ def login(
         data.password,
         user.password_hash,
     ):
+        login_by_account.hit(account_key)
+        login_by_ip.hit(ip)
         raise HTTPException(
             status_code=401,
             detail="Correo o contraseña incorrectos",
         )
+
+    login_by_account.reset(account_key)
 
     access_token = create_access_token(
         data={"sub": str(user.id)},
@@ -142,4 +178,286 @@ def get_me(
         email=current_user.email,
         is_business=current_user.is_business,
         access_token="",
+    )
+
+
+# =========================================================
+# ELIMINAR MI CUENTA
+# (Obligatorio en Google Play y App Store)
+# =========================================================
+
+@router.post(
+    "/delete-account",
+    response_model=MessageResponse,
+)
+def delete_account(
+    data: DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Elimina la cuenta: borra datos personales y anonimiza el historial.
+
+    Las reservas pasadas se conservan sin datos personales (el negocio las
+    necesita para su contabilidad). No se puede eliminar la cuenta mientras
+    haya reservas pendientes de retiro.
+    """
+    if not pwd_context.verify(data.password, current_user.password_hash):
+        raise HTTPException(
+            status_code=400,
+            detail="La contraseña es incorrecta",
+        )
+
+    expire_overdue_reservations(db)
+
+    business = (
+        db.query(Business)
+        .filter(Business.owner_id == current_user.id)
+        .first()
+    )
+
+    # 1) Reservas pendientes que bloquean la eliminacion
+    mine = (
+        db.query(Reservation)
+        .filter(Reservation.user_id == current_user.id)
+        .filter(Reservation.status == "reserved")
+        .count()
+    )
+
+    if mine > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Tienes {mine} reserva(s) pendiente(s). Retírala(s) o "
+                "cancélala(s) antes de eliminar tu cuenta."
+            ),
+        )
+
+    if business:
+        pending_for_business = (
+            db.query(Reservation)
+            .join(FoodPack, Reservation.food_pack_id == FoodPack.id)
+            .filter(FoodPack.business_id == business.id)
+            .filter(Reservation.status == "reserved")
+            .count()
+        )
+
+        if pending_for_business > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Tu negocio tiene {pending_for_business} reserva(s) de "
+                    "clientes pendiente(s) de retiro. Entrégalas antes de "
+                    "eliminar tu cuenta."
+                ),
+            )
+
+        # 2) Negocio: borrar packs sin historial, ocultar el resto y
+        #    quitar datos de contacto y fotos.
+        packs = (
+            db.query(FoodPack)
+            .filter(FoodPack.business_id == business.id)
+            .all()
+        )
+
+        for pack in packs:
+            delete_pack_image_file(pack.image_url)
+
+            has_history = (
+                db.query(Reservation)
+                .filter(Reservation.food_pack_id == pack.id)
+                .first()
+            )
+
+            if has_history:
+                pack.image_url = None
+                pack.status = "paused"
+            else:
+                db.delete(pack)
+
+        business.name = "Negocio eliminado"
+        business.description = None
+        business.address = "No disponible"
+        business.phone = None
+        business.latitude = None
+        business.longitude = None
+
+    # 3) Usuario: borrar datos personales y bloquear el acceso
+    db.query(DeviceToken).filter(
+        DeviceToken.user_id == current_user.id
+    ).delete()
+
+    current_user.name = "Usuario eliminado"
+    current_user.email = f"deleted-{current_user.id}@deleted.invalid"
+    current_user.password_hash = pwd_context.hash(secrets.token_urlsafe(32))
+    current_user.is_active = False
+
+    db.commit()
+
+    return MessageResponse(message="Tu cuenta fue eliminada")
+
+
+# =========================================================
+# RECUPERAR CONTRASENA (codigo de 6 digitos por correo)
+# =========================================================
+
+RESET_CODE_MINUTES = 10      # vigencia del codigo
+RESET_MAX_ATTEMPTS = 5       # intentos por codigo
+RESET_MAX_REQUESTS_PER_HOUR = 3
+
+# Misma respuesta exista o no el correo: no se revela quien tiene cuenta.
+FORGOT_PASSWORD_MESSAGE = (
+    "Si el correo está registrado, te enviamos un código de 6 dígitos. "
+    f"Vence en {RESET_CODE_MINUTES} minutos."
+)
+
+INVALID_CODE_MESSAGE = "El código es incorrecto o ya venció"
+
+
+def _hash_reset_code(user_id: int, code: str) -> str:
+    """Huella del codigo, atada al usuario y a la SECRET_KEY del servidor."""
+    secret = os.getenv("SECRET_KEY", "").encode()
+
+    return hmac.new(
+        secret,
+        f"{user_id}:{code}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+@router.post(
+    "/forgot-password",
+    response_model=MessageResponse,
+)
+def forgot_password(
+    data: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Envia al correo un codigo de 6 digitos para cambiar la contrasena."""
+    ip = client_ip(request)
+
+    # Limite por IP: evita que alguien llene de correos buzones ajenos.
+    # Se responde igual para no dar pistas.
+    if forgot_by_ip.is_blocked(ip):
+        return MessageResponse(message=FORGOT_PASSWORD_MESSAGE)
+
+    forgot_by_ip.hit(ip)
+
+    user = (
+        db.query(User)
+        .filter(User.email == data.email)
+        .first()
+    )
+
+    if user and user.is_active:
+        now = datetime.utcnow()
+
+        recent = (
+            db.query(PasswordReset)
+            .filter(PasswordReset.user_id == user.id)
+            .filter(PasswordReset.created_at >= now - timedelta(hours=1))
+            .count()
+        )
+
+        # Pasado el limite se ignora en silencio (misma respuesta).
+        if recent < RESET_MAX_REQUESTS_PER_HOUR:
+            # Un codigo nuevo invalida los anteriores
+            db.query(PasswordReset).filter(
+                PasswordReset.user_id == user.id,
+                PasswordReset.used.is_(False),
+            ).update({"used": True})
+
+            code = f"{secrets.randbelow(10**6):06d}"
+
+            db.add(
+                PasswordReset(
+                    user_id=user.id,
+                    code_hash=_hash_reset_code(user.id, code),
+                    expires_at=now + timedelta(minutes=RESET_CODE_MINUTES),
+                )
+            )
+            db.commit()
+
+            # En segundo plano: asi la respuesta tarda lo mismo exista o no
+            # el correo.
+            background_tasks.add_task(
+                send_password_reset_code,
+                user.email,
+                user.name,
+                code,
+                RESET_CODE_MINUTES,
+            )
+
+    return MessageResponse(message=FORGOT_PASSWORD_MESSAGE)
+
+
+@router.post(
+    "/reset-password",
+    response_model=MessageResponse,
+)
+def reset_password(
+    data: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """Cambia la contrasena usando el codigo recibido por correo."""
+    if len(data.new_password) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="La contraseña debe tener al menos 6 caracteres",
+        )
+
+    user = (
+        db.query(User)
+        .filter(User.email == data.email)
+        .first()
+    )
+
+    invalid = HTTPException(status_code=400, detail=INVALID_CODE_MESSAGE)
+
+    if not user or not user.is_active:
+        raise invalid
+
+    # Se bloquea la fila: pruebas simultaneas no pueden saltarse el limite
+    # de intentos.
+    reset = (
+        db.query(PasswordReset)
+        .filter(PasswordReset.user_id == user.id)
+        .filter(PasswordReset.used.is_(False))
+        .order_by(PasswordReset.id.desc())
+        .with_for_update()
+        .first()
+    )
+
+    if not reset or reset.expires_at < datetime.utcnow():
+        raise invalid
+
+    if reset.attempts >= RESET_MAX_ATTEMPTS:
+        reset.used = True
+        db.commit()
+        raise invalid
+
+    reset.attempts += 1
+
+    expected = reset.code_hash
+    received = _hash_reset_code(user.id, data.code.strip())
+
+    if not hmac.compare_digest(expected, received):
+        if reset.attempts >= RESET_MAX_ATTEMPTS:
+            reset.used = True
+        db.commit()
+        raise invalid
+
+    user.password_hash = pwd_context.hash(data.new_password)
+    reset.used = True
+
+    db.query(PasswordReset).filter(
+        PasswordReset.user_id == user.id,
+        PasswordReset.used.is_(False),
+    ).update({"used": True})
+
+    db.commit()
+
+    return MessageResponse(
+        message="Tu contraseña fue actualizada. Ya puedes iniciar sesión."
     )

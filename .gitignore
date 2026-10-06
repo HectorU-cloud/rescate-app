@@ -43,3 +43,6 @@ mobile/android/build/
 
 # === FOTOS SUBIDAS (backend) ===
 backend/uploads/
+
+# === PRUEBAS ===
+.pytest_cache/

@@ -6,7 +6,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+def normalize_database_url(url: str | None) -> str | None:
+    """Algunos hostings entregan "postgres://", que SQLAlchemy no acepta."""
+    if url and url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://"):]
+    return url
+
+
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL"))
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL no está configurada")

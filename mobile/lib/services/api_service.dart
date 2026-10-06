@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'dart:io' show Platform;
+
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
@@ -14,8 +16,12 @@ class ApiService {
   // Por defecto apunta al emulador de Android (10.0.2.2 = tu PC).
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:8000',
+    defaultValue: 'http://192.168.100.51:8000',
   );
+
+  /// Paginas legales publicas (las sirve el propio backend).
+  static String get privacyUrl => '$baseUrl/privacy';
+  static String get termsUrl => '$baseUrl/terms';
 
   /// Convierte la ruta que devuelve el servidor ("/uploads/packs/x.jpg")
   /// en una URL completa que Image.network pueda abrir.
@@ -534,6 +540,63 @@ class ApiService {
     }
   }
     // -------------------------------------------------
+  // RECUPERAR CONTRASENA (codigo de 6 digitos por correo)
+  // -------------------------------------------------
+
+  /// Pide un codigo. El servidor responde igual exista o no el correo.
+  Future<void> forgotPassword(String email) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/auth/forgot-password'),
+      headers: await _headers(withAuth: false),
+      body: jsonEncode({'email': email}),
+    );
+
+    if (response.statusCode != 200) {
+      _handleError(response);
+    }
+  }
+
+  Future<void> resetPassword({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/auth/reset-password'),
+      headers: await _headers(withAuth: false),
+      body: jsonEncode({
+        'email': email,
+        'code': code,
+        'new_password': newPassword,
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      _handleError(response);
+    }
+  }
+
+  // -------------------------------------------------
+  // ELIMINAR CUENTA
+  // -------------------------------------------------
+
+  /// Elimina la cuenta del usuario actual (pide su contrasena).
+  /// Si sale bien, tambien cierra la sesion guardada en el telefono.
+  Future<void> deleteAccount(String password) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/auth/delete-account'),
+      headers: await _headers(),
+      body: jsonEncode({'password': password}),
+    );
+
+    if (response.statusCode != 200) {
+      _handleError(response);
+    }
+
+    await _sessionService.clearSession();
+  }
+
+  // -------------------------------------------------
   // NOTIFICACIONES - DEVICE TOKEN
   // -------------------------------------------------
 
@@ -543,7 +606,7 @@ class ApiService {
       headers: await _headers(),
       body: jsonEncode({
         'token': token,
-        'platform': 'android',
+        'platform': Platform.isIOS ? 'ios' : 'android',
       }),
     );
 

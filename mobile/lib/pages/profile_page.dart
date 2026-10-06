@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/user.dart';
+import '../services/api_service.dart';
 import '../services/session_service.dart';
 import 'login_page.dart';
 
@@ -11,6 +13,130 @@ class ProfilePage extends StatelessWidget {
     super.key,
     required this.user,
   });
+
+  Future<void> _openUrl(BuildContext context, String url) async {
+    final opened = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No pudimos abrir el enlace'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _deleteAccount(BuildContext context) async {
+    final passwordController = TextEditingController();
+    String? error;
+    bool loading = false;
+
+    final deleted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
+              title: const Text('Eliminar cuenta'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Esta acción es permanente. Borraremos tu nombre, '
+                    'correo y datos de contacto, y no podrás volver a '
+                    'entrar con esta cuenta.\n\n'
+                    'Escribe tu contraseña para confirmar.',
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: passwordController,
+                    obscureText: true,
+                    enabled: !loading,
+                    decoration: InputDecoration(
+                      labelText: 'Contraseña',
+                      errorText: error,
+                      errorMaxLines: 4,
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: loading
+                      ? null
+                      : () => Navigator.pop(dialogContext, false),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.red.shade700,
+                  ),
+                  onPressed: loading
+                      ? null
+                      : () async {
+                          if (passwordController.text.isEmpty) {
+                            setState(() {
+                              error = 'Escribe tu contraseña';
+                            });
+                            return;
+                          }
+
+                          setState(() {
+                            loading = true;
+                            error = null;
+                          });
+
+                          try {
+                            await ApiService()
+                                .deleteAccount(passwordController.text);
+
+                            if (dialogContext.mounted) {
+                              Navigator.pop(dialogContext, true);
+                            }
+                          } catch (e) {
+                            setState(() {
+                              loading = false;
+                              error = e
+                                  .toString()
+                                  .replaceFirst('Exception: ', '');
+                            });
+                          }
+                        },
+                  child: loading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Eliminar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (deleted != true || !context.mounted) return;
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute<void>(
+        builder: (_) => const LoginPage(),
+      ),
+      (route) => false,
+    );
+  }
 
   Future<void> _logout(BuildContext context) async {
     final confirmed = await showDialog<bool>(
@@ -187,6 +313,36 @@ class ProfilePage extends StatelessWidget {
                   borderRadius: BorderRadius.circular(16),
                 ),
               ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Legales
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton(
+                onPressed: () =>
+                    _openUrl(context, ApiService.termsUrl),
+                child: const Text('Términos'),
+              ),
+              TextButton(
+                onPressed: () =>
+                    _openUrl(context, ApiService.privacyUrl),
+                child: const Text('Privacidad'),
+              ),
+            ],
+          ),
+
+          // Eliminar cuenta
+          Center(
+            child: TextButton(
+              onPressed: () => _deleteAccount(context),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.grey.shade600,
+              ),
+              child: const Text('Eliminar mi cuenta'),
             ),
           ),
         ],

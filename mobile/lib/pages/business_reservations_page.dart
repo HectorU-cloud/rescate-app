@@ -562,6 +562,11 @@ class _BusinessReservationsPageState extends State<BusinessReservationsPage> {
         textColor = Colors.red.shade700;
         label = 'Cancelado';
         break;
+      case 'No retirado':
+        bgColor = Colors.orange.shade50;
+        textColor = Colors.orange.shade800;
+        label = 'No retirado';
+        break;
       default:
         bgColor = Colors.grey.shade200;
         textColor = Colors.grey.shade700;

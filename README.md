@@ -17,6 +17,9 @@ App móvil para **rescatar comida** en Ecuador: panaderías, cafeterías y resta
 - Notificaciones push (Firebase)
 - Buscador y filtros por categoría
 - Fotos de los packs (el negocio las sube desde su galería)
+- Recuperar contraseña con un código de 6 dígitos enviado por correo (Resend)
+- Eliminar cuenta desde la app (requisito de Google Play y App Store) y páginas públicas `/privacy`, `/terms` y `/account-deletion`
+- Reservas no retiradas: pasado el horario (+30 min de gracia) se marcan "No retirado"; con 3 en 30 días se bloquean nuevas reservas (configurable en `.env`)
 - Pago en efectivo al retirar (pago online: próximamente)
 
 ## Estructura
@@ -44,6 +47,8 @@ En `.env` define:
 - `SECRET_KEY`: **obligatoria**, mínimo 32 caracteres. Genérala con:
   `python -c "import secrets; print(secrets.token_urlsafe(48))"`
 - `SEED_DEMO_PASSWORD` (opcional): contraseña de las cuentas demo.
+- `COMPANY_NAME` y `SUPPORT_EMAIL`: aparecen en la política de privacidad y los términos (necesarios para publicar).
+- `RESEND_API_KEY` y `FROM_EMAIL`: envío del código para recuperar contraseña. Sin ellos no se envía el correo; para probar en local pon `DEV_PRINT_EMAILS=1` y el código aparece en la consola.
 
 Las fotos se guardan en `backend/uploads/` (no se sube al repo). En un servidor con disco temporal (Render, Railway, etc.) se pierden al reiniciar: monta un volumen persistente o migra a almacenamiento en la nube.
 
@@ -69,6 +74,26 @@ flutter run --dart-define=API_BASE_URL=http://IP_DE_TU_PC:8000
 
 Para notificaciones push, agrega tu `google-services.json` en `mobile/android/app/` (no se sube al repo).
 
+## Pruebas automáticas
+
+Las pruebas **borran y recrean las tablas**, así que usan una base de datos aparte (nunca la de tu `.env`):
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+createdb rescate_test
+export TEST_DATABASE_URL=postgresql://usuario:clave@localhost:5432/rescate_test
+pytest
+```
+
+Cubren el flujo reservar → retirar, cancelaciones, stock con reservas simultáneas, horarios vencidos y reservas no retiradas.
+
+## Publicar en las tiendas
+
+Guía paso a paso para Google Play (y luego iOS): [`docs/PUBLICAR_ANDROID.md`](docs/PUBLICAR_ANDROID.md).
+
+Cómo poner el servidor en internet (VPS con Docker o Render): [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md).
+
 ## Cuentas demo
 
 Después de correr `seed.py`:
@@ -82,6 +107,4 @@ Contraseña: la que imprime `seed.py` (o `SEED_DEMO_PASSWORD`).
 
 - Fotos con cámara (hoy solo galería) y guardado de fotos en la nube
 - Pago online con tarjeta
-- Recuperar contraseña, términos y privacidad
 - Calificaciones, alérgenos e ingredientes
-- Tests automáticos del flujo reservar → retirar

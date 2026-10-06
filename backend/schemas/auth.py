@@ -13,6 +13,24 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
 class AuthResponse(BaseModel):
     message: str
     user_id: int
