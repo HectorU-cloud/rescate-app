@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/user.dart';
 import '../services/api_service.dart';
+import '../services/google_auth_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import 'business_home_page.dart';
@@ -26,6 +27,7 @@ class _LoginPageState extends State<LoginPage> {
   final SessionService _sessionService = SessionService();
 
   bool _isLoading = false;
+  bool _isGoogleLoading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
 
@@ -71,6 +73,44 @@ class _LoginPageState extends State<LoginPage> {
 
       setState(() {
         _isLoading = false;
+        _errorMessage = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  Future<void> _loginWithGoogle() async {
+    if (_isLoading || _isGoogleLoading) return;
+
+    setState(() {
+      _isGoogleLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final firebaseIdToken =
+          await GoogleAuthService.instance.signInAndGetIdToken();
+
+      final User user = await _apiService.loginWithGoogle(
+        idToken: firebaseIdToken,
+      );
+
+      await _sessionService.saveUser(user);
+      await NotificationService().syncTokenAfterLogin();
+
+      if (!mounted) return;
+
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => user.isBusiness
+              ? BusinessHomePage(user: user)
+              : HomePage(user: user),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _isGoogleLoading = false;
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
     }
@@ -266,6 +306,51 @@ class _LoginPageState extends State<LoginPage> {
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  Row(
+                    children: [
+                      Expanded(child: Divider(color: Colors.grey.shade300)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'o continúa con',
+                          style: TextStyle(color: Colors.grey.shade600),
+                        ),
+                      ),
+                      Expanded(child: Divider(color: Colors.grey.shade300)),
+                    ],
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  SizedBox(
+                    height: 54,
+                    child: OutlinedButton.icon(
+                      onPressed: (_isLoading || _isGoogleLoading)
+                          ? null
+                          : _loginWithGoogle,
+                      icon: _isGoogleLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(Icons.account_circle_outlined),
+                      label: Text(
+                        _isGoogleLoading
+                            ? 'Conectando con Google...'
+                            : 'Continuar con Google',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
                   ),
 

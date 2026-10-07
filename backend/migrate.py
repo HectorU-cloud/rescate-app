@@ -35,6 +35,20 @@ def migrate():
         """))
         print("✅ fee_settled")
 
+        # Identidad para Google/Firebase Authentication.
+        conn.execute(text("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS firebase_uid VARCHAR(128) UNIQUE
+        """))
+        print("✅ users.firebase_uid")
+
+        conn.execute(text("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(30)
+            DEFAULT 'password' NOT NULL
+        """))
+        print("✅ users.auth_provider")
+
         # 👇 NUEVA COLUMNA
         conn.execute(text("""
             ALTER TABLE reservations

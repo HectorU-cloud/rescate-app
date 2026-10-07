@@ -31,6 +31,22 @@ class User(Base):
         nullable=False,
     )
 
+    # Identidad Firebase usada por inicio de sesión con Google.
+    # Es nullable porque las cuentas existentes pueden seguir usando
+    # correo + contraseña.
+    firebase_uid: Mapped[str | None] = mapped_column(
+        String(128),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+
+    auth_provider: Mapped[str] = mapped_column(
+        String(30),
+        default="password",
+        nullable=False,
+    )
+
     is_business: Mapped[bool] = mapped_column(
         Boolean,
         default=False,

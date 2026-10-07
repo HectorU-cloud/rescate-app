@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../models/user.dart';
 import '../services/api_service.dart';
+import '../services/google_auth_service.dart';
 import '../services/session_service.dart';
 import 'login_page.dart';
 
@@ -174,6 +175,7 @@ class ProfilePage extends StatelessWidget {
 
     final sessionService = SessionService();
 
+    await GoogleAuthService.instance.signOut();
     await sessionService.clearSession();
 
     if (!context.mounted) return;

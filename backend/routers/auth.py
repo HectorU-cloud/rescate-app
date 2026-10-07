@@ -16,12 +16,14 @@ from models.password_reset import PasswordReset
 from models.reservation import Reservation
 from models.user import User
 from email_service import send_password_reset_code
+from firebase_service import verify_id_token
 from rate_limit import client_ip, forgot_by_ip, login_by_account, login_by_ip
 from reservation_rules import expire_overdue_reservations
 from routers.uploads import delete_pack_image_file
 from schemas.auth import (
     RegisterRequest,
     LoginRequest,
+    GoogleLoginRequest,
     AuthResponse,
     DeleteAccountRequest,
     ForgotPasswordRequest,
@@ -156,6 +158,93 @@ def login(
 
     return AuthResponse(
         message="Inicio de sesión correcto",
+        user_id=user.id,
+        name=user.name,
+        email=user.email,
+        is_business=user.is_business,
+        access_token=access_token,
+    )
+
+
+@router.post(
+    "/google",
+    response_model=AuthResponse,
+)
+def google_login(
+    data: GoogleLoginRequest,
+    db: Session = Depends(get_db),
+):
+    """Inicia sesión con Google mediante un Firebase ID token.
+
+    Firebase autentica la cuenta de Google en Flutter. El backend verifica
+    el ID token con Firebase Admin y después entrega el JWT propio de Rescate,
+    de modo que el resto de la API sigue usando el mismo mecanismo de auth.
+    """
+    decoded = verify_id_token(data.id_token)
+
+    firebase_uid = decoded.get("uid")
+    email = (decoded.get("email") or "").strip().lower()
+    name = (decoded.get("name") or "Usuario Google").strip()
+    email_verified = bool(decoded.get("email_verified", False))
+
+    if not firebase_uid or not email or not email_verified:
+        raise HTTPException(
+            status_code=401,
+            detail="La cuenta de Google no tiene un correo válido verificado.",
+        )
+
+    user = (
+        db.query(User)
+        .filter(User.firebase_uid == firebase_uid)
+        .first()
+    )
+
+    # Si ya existía una cuenta normal con ese correo, la vinculamos a Google.
+    if user is None:
+        user = (
+            db.query(User)
+            .filter(User.email == email)
+            .first()
+        )
+
+    if user is None:
+        # La contraseña nunca se muestra ni se usa para el login de Google.
+        # Dejamos un hash aleatorio para mantener compatibilidad con el modelo.
+        random_password_hash = pwd_context.hash(
+            secrets.token_urlsafe(48)
+        )
+
+        user = User(
+            name=name[:100],
+            email=email[:150],
+            password_hash=random_password_hash,
+            firebase_uid=firebase_uid,
+            auth_provider="google",
+            is_business=False,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        if not user.is_active:
+            raise HTTPException(
+                status_code=403,
+                detail="El usuario está desactivado",
+            )
+
+        user.firebase_uid = firebase_uid
+        user.auth_provider = "google"
+        if name and user.name != name[:100]:
+            user.name = name[:100]
+
+    db.commit()
+    db.refresh(user)
+
+    access_token = create_access_token(
+        data={"sub": str(user.id)},
+    )
+
+    return AuthResponse(
+        message="Inicio de sesión con Google correcto",
         user_id=user.id,
         name=user.name,
         email=user.email,

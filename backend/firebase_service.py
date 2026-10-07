@@ -3,7 +3,7 @@ import json
 import os
 
 import firebase_admin
-from firebase_admin import credentials, messaging
+from firebase_admin import auth, credentials, messaging
 from fastapi import HTTPException
 
 
@@ -47,6 +47,19 @@ def _get_app():
 
     return _firebase_app
 
+
+
+def verify_id_token(id_token: str) -> dict:
+    """Verifica un Firebase ID token y devuelve sus claims confiables."""
+    try:
+        _get_app()
+        return auth.verify_id_token(id_token)
+    except Exception as error:
+        print(f"❌ Firebase ID token inválido: {error}")
+        raise HTTPException(
+            status_code=401,
+            detail="No se pudo validar la cuenta de Google.",
+        )
 
 def send_push(
     token: str,

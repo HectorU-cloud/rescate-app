@@ -115,6 +115,31 @@ class ApiService {
     return user;
   }
 
+  Future<User> loginWithGoogle({
+    required String idToken,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/auth/google'),
+      headers: await _headers(withAuth: false),
+      body: jsonEncode({
+        'id_token': idToken,
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      _handleError(response);
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    final user = User.fromJson(body);
+    final token = body['access_token']?.toString() ?? '';
+
+    await _sessionService.saveUser(user, token: token);
+
+    return user;
+  }
+
   Future<User> register({
     required String name,
     required String email,
