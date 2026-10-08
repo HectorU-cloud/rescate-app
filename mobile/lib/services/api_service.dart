@@ -84,6 +84,26 @@ class ApiService {
     throw Exception(message);
   }
 
+  /// Lanza el mensaje que manda el servidor. A diferencia de [_handleError],
+  /// NO trata el 401 como "sesion expirada": en el login un 401 significa
+  /// "correo o contrasena incorrectos".
+  Never _throwServerMessage(http.Response response) {
+    String message = 'Error del servidor (${response.statusCode})';
+
+    try {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final detail = body['detail'];
+
+      if (detail != null && detail.toString().isNotEmpty) {
+        message = detail.toString();
+      }
+    } catch (_) {
+      // dejamos el mensaje generico
+    }
+
+    throw Exception(message);
+  }
+
   // -------------------------------------------------
   // AUTH
   // -------------------------------------------------
@@ -102,7 +122,7 @@ class ApiService {
     );
 
     if (response.statusCode != 200) {
-      _handleError(response);
+      _throwServerMessage(response);
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -115,19 +135,25 @@ class ApiService {
     return user;
   }
 
+  /// Inicia sesion (o crea la cuenta) con un ID token de Firebase.
+  ///
+  /// Si la cuenta es nueva y [isBusiness] es null, el servidor responde
+  /// "ROLE_REQUIRED" y la pantalla debe preguntar si es cliente o negocio.
   Future<User> loginWithGoogle({
     required String idToken,
+    bool? isBusiness,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/auth/google'),
       headers: await _headers(withAuth: false),
       body: jsonEncode({
         'id_token': idToken,
+        if (isBusiness != null) 'is_business': isBusiness,
       }),
     );
 
     if (response.statusCode != 200) {
-      _handleError(response);
+      _throwServerMessage(response);
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -201,7 +227,7 @@ class ApiService {
   Future<Map<String, dynamic>> createReservation({
     required int foodPackId,
     required int quantity,
-    String paymentMethod = 'online',
+    String paymentMethod = 'cash',
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/reservations'),
@@ -607,11 +633,17 @@ class ApiService {
 
   /// Elimina la cuenta del usuario actual (pide su contrasena).
   /// Si sale bien, tambien cierra la sesion guardada en el telefono.
-  Future<void> deleteAccount(String password) async {
+  Future<void> deleteAccount({
+    String password = '',
+    String? idToken,
+  }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/auth/delete-account'),
       headers: await _headers(),
-      body: jsonEncode({'password': password}),
+      body: jsonEncode({
+        'password': password,
+        if (idToken != null) 'id_token': idToken,
+      }),
     );
 
     if (response.statusCode != 200) {

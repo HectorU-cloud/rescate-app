@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ReservationCreate(BaseModel):
     food_pack_id: int
     quantity: int = Field(gt=0)
-    payment_method: str = "online"
+    payment_method: str = "cash"
 
 
 class ReservationResponse(BaseModel):

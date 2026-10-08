@@ -1,11 +1,14 @@
 import base64
 import json
+import logging
 import os
 
 import firebase_admin
 from firebase_admin import auth, credentials, messaging
 from fastapi import HTTPException
 
+
+logger = logging.getLogger("rescate.firebase")
 
 SERVICE_ACCOUNT_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -50,16 +53,54 @@ def _get_app():
 
 
 def verify_id_token(id_token: str) -> dict:
-    """Verifica un Firebase ID token y devuelve sus claims confiables."""
+    """Verifica un Firebase ID token y devuelve sus datos confiables."""
+    _get_app()  # si faltan credenciales, el error real (500) sube tal cual
+
     try:
-        _get_app()
         return auth.verify_id_token(id_token)
-    except Exception as error:
-        print(f"❌ Firebase ID token inválido: {error}")
+
+    except (
+        auth.InvalidIdTokenError,
+        auth.ExpiredIdTokenError,
+        auth.RevokedIdTokenError,
+        ValueError,
+    ) as error:
+        logger.info("ID token rechazado: %s", error)
         raise HTTPException(
             status_code=401,
             detail="No se pudo validar la cuenta de Google.",
         )
+
+    except Exception:
+        # Sin red, certificados de Google no disponibles, etc.
+        logger.exception("Fallo inesperado al validar el ID token")
+        raise HTTPException(
+            status_code=503,
+            detail="No pudimos validar tu cuenta de Google ahora. Inténtalo más tarde.",
+        )
+
+
+def delete_firebase_user(uid: str) -> None:
+    """Borra al usuario de Firebase Authentication (correo, nombre, foto).
+
+    Si ya no existe se considera hecho. Cualquier otro fallo detiene la
+    eliminacion de la cuenta para no dejar datos personales olvidados.
+    """
+    _get_app()
+
+    try:
+        auth.delete_user(uid)
+
+    except auth.UserNotFoundError:
+        return
+
+    except Exception:
+        logger.exception("No se pudo borrar el usuario %s de Firebase", uid)
+        raise HTTPException(
+            status_code=503,
+            detail="No pudimos eliminar tu cuenta de Google ahora. Inténtalo más tarde.",
+        )
+
 
 def send_push(
     token: str,

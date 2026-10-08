@@ -32,6 +32,11 @@ router = APIRouter(
 
 SERVICE_FEE = Decimal("0.25")
 
+# Metodos de pago que el servidor acepta. "online" NO esta aqui a proposito:
+# una reserva "pagada online" sin cobro real regalaria la comida. Se agrega
+# cuando exista un pago verificado (Payphone).
+ACCEPTED_PAYMENT_METHODS = ("cash",)
+
 
 def _reservation_code(db: Session) -> str:
     for _ in range(10):
@@ -348,10 +353,10 @@ def create_reservation(
             detail="No hay suficientes unidades disponibles",
         )
 
-    if data.payment_method not in ("online", "cash"):
+    if data.payment_method not in ACCEPTED_PAYMENT_METHODS:
         raise HTTPException(
             status_code=400,
-            detail="Método de pago inválido",
+            detail="Por ahora solo se acepta pago en efectivo al retirar",
         )
 
     subtotal = Decimal(str(pack.price)) * data.quantity

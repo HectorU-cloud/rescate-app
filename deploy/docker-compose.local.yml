@@ -1,11 +1,10 @@
-# Override SOLO para desarrollo local.
-# Uso:
+# SOLO para pruebas en tu computadora o red local: expone la API sin HTTPS en
+# el puerto 8000 (http://IP-DE-TU-PC:8000), por ejemplo para el emulador o un
+# telefono en tu misma red.
+#
 #   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 #
-# Expone el puerto 8000 para que tu celular o emulador puedan
-# alcanzar la API directamente (sin pasar por Caddy).
-# NUNCA uses este archivo en producción.
-
+# NUNCA lo uses en el servidor de produccion.
 services:
   app:
     ports:

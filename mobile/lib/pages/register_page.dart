@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../models/user.dart';
 import '../services/api_service.dart';
+import '../services/google_auth_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import 'business_home_page.dart';
@@ -31,6 +32,7 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _obscureConfirmPassword = true;
   bool _isBusiness = false;
   bool _acceptedTerms = false;
+  bool _isGoogleLoading = false;
   String? _errorMessage;
 
   @override
@@ -89,6 +91,56 @@ class _RegisterPageState extends State<RegisterPage> {
 
       setState(() {
         _isLoading = false;
+        _errorMessage = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  Future<void> _registerWithGoogle() async {
+    if (_isLoading || _isGoogleLoading) return;
+
+    if (!_acceptedTerms) {
+      setState(() {
+        _errorMessage =
+            'Debes aceptar los términos y la política de privacidad para crear tu cuenta.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isGoogleLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final firebaseIdToken =
+          await GoogleAuthService.instance.signInAndGetIdToken();
+
+      // Aqui el rol ya esta elegido con el interruptor "Soy un negocio".
+      // Si la cuenta de Google ya existia, el servidor lo ignora.
+      final User user = await _apiService.loginWithGoogle(
+        idToken: firebaseIdToken,
+        isBusiness: _isBusiness,
+      );
+
+      await _sessionService.saveUser(user);
+      await NotificationService().syncTokenAfterLogin();
+
+      if (!mounted) return;
+
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute<void>(
+          builder: (_) => user.isBusiness
+              ? BusinessHomePage(user: user)
+              : HomePage(user: user),
+        ),
+        (route) => false,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _isGoogleLoading = false;
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
     }
@@ -405,7 +457,8 @@ class _RegisterPageState extends State<RegisterPage> {
                 SizedBox(
                   height: 56,
                   child: FilledButton(
-                    onPressed: _isLoading ? null : _register,
+                    onPressed:
+                        (_isLoading || _isGoogleLoading) ? null : _register,
                     child: _isLoading
                         ? const SizedBox(
                             width: 24,
@@ -422,6 +475,49 @@ class _RegisterPageState extends State<RegisterPage> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                Row(
+                  children: [
+                    Expanded(child: Divider(color: Colors.grey.shade300)),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(
+                        'o',
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
+                    ),
+                    Expanded(child: Divider(color: Colors.grey.shade300)),
+                  ],
+                ),
+
+                const SizedBox(height: 16),
+
+                SizedBox(
+                  height: 54,
+                  child: OutlinedButton.icon(
+                    onPressed: (_isLoading || _isGoogleLoading)
+                        ? null
+                        : _registerWithGoogle,
+                    icon: _isGoogleLoading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.account_circle_outlined),
+                    label: Text(
+                      _isGoogleLoading
+                          ? 'Conectando con Google...'
+                          : 'Registrarme con Google',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
               ],

@@ -56,6 +56,9 @@ class AttemptLimiter:
 login_by_account = AttemptLimiter(max_attempts=5, window_seconds=15 * 60)
 login_by_ip = AttemptLimiter(max_attempts=30, window_seconds=15 * 60)
 
+# Tokens de Google invalidos por IP.
+google_fail_by_ip = AttemptLimiter(max_attempts=20, window_seconds=15 * 60)
+
 # Solicitudes de codigo de recuperacion por IP (evita llenar buzones ajenos).
 forgot_by_ip = AttemptLimiter(max_attempts=10, window_seconds=60 * 60)
 
@@ -66,5 +69,5 @@ def client_ip(request) -> str:
 
 def reset_all() -> None:
     """Para las pruebas."""
-    for limiter in (login_by_account, login_by_ip, forgot_by_ip):
+    for limiter in (login_by_account, login_by_ip, forgot_by_ip, google_fail_by_ip):
         limiter.clear()

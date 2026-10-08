@@ -81,6 +81,9 @@ Protección de Datos Personales de Ecuador.</p>
 <ul>
   <li><strong>Cuenta:</strong> nombre, correo electrónico y contraseña
       (la guardamos cifrada; nosotros no podemos verla).</li>
+  <li><strong>Inicio de sesión con Google (opcional):</strong> si eliges entrar
+      con Google, recibimos tu nombre, tu correo verificado y un identificador de
+      tu cuenta de Google. No recibimos tu contraseña de Google.</li>
   <li><strong>Reservas:</strong> qué pack reservaste, cantidad, monto, método
       de pago, estado (reservado, retirado, cancelado o no retirado) y fechas.</li>
   <li><strong>Si eres un negocio:</strong> nombre del local, descripción,
@@ -119,6 +122,8 @@ de tarjetas</strong>.</p>
   <li><strong>Resend</strong>, servicio de envío de correo, procesa tu correo
       electrónico y el código de verificación cuando recuperas tu
       contraseña.</li>
+  <li><strong>Google (Firebase Authentication)</strong> procesa tu cuenta de
+      Google cuando eliges iniciar sesión con ella.</li>
   <li><strong>OpenStreetMap:</strong> al ver el mapa, tu dispositivo descarga
       imágenes del mapa desde sus servidores, que reciben tu dirección IP.</li>
   <li><strong>Proveedor de alojamiento del servidor</strong>, que almacena la
@@ -271,6 +276,8 @@ solicitud en un máximo de 15 días.</p>
 <h2>Qué se elimina</h2>
 <ul>
   <li>Tu nombre, correo y contraseña.</li>
+  <li>Si entraste con Google, también eliminamos tu cuenta de nuestro sistema de
+      acceso (Firebase Authentication). Tu cuenta de Google no se toca.</li>
   <li>Los identificadores de tu dispositivo para notificaciones.</li>
   <li>Si eres un negocio: tu teléfono, dirección, ubicación, descripción y las
       fotos de tus packs; tus packs dejan de mostrarse.</li>

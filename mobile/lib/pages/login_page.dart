@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/user.dart';
 import '../services/api_service.dart';
@@ -78,6 +79,71 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  /// Pregunta si la cuenta nueva es de cliente o de negocio.
+  /// Devuelve true = negocio, false = cliente, null = cancelo.
+  Future<bool?> _askRole() {
+    Future<void> open(String url) =>
+        launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          title: const Text('¿Cómo vas a usar Rescate?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Elige el tipo de cuenta. No podrás cambiarlo después.',
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                icon: const Icon(Icons.shopping_bag_outlined),
+                label: const Text('Soy cliente'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                icon: const Icon(Icons.storefront_outlined),
+                label: const Text('Soy un negocio'),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Al continuar aceptas los términos y condiciones y la '
+                'política de privacidad.',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+              ),
+              Wrap(
+                children: [
+                  TextButton(
+                    onPressed: () => open(ApiService.termsUrl),
+                    child: const Text('Ver términos'),
+                  ),
+                  TextButton(
+                    onPressed: () => open(ApiService.privacyUrl),
+                    child: const Text('Ver privacidad'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, null),
+              child: const Text('Cancelar'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _loginWithGoogle() async {
     if (_isLoading || _isGoogleLoading) return;
 
@@ -90,9 +156,30 @@ class _LoginPageState extends State<LoginPage> {
       final firebaseIdToken =
           await GoogleAuthService.instance.signInAndGetIdToken();
 
-      final User user = await _apiService.loginWithGoogle(
-        idToken: firebaseIdToken,
-      );
+      User user;
+
+      try {
+        user = await _apiService.loginWithGoogle(idToken: firebaseIdToken);
+      } catch (e) {
+        if (!e.toString().contains('ROLE_REQUIRED')) rethrow;
+
+        // Cuenta nueva: se pregunta el tipo y se reutiliza el mismo token.
+        final isBusiness = await _askRole();
+
+        if (isBusiness == null) {
+          await GoogleAuthService.instance.signOut();
+
+          if (!mounted) return;
+
+          setState(() => _isGoogleLoading = false);
+          return;
+        }
+
+        user = await _apiService.loginWithGoogle(
+          idToken: firebaseIdToken,
+          isBusiness: isBusiness,
+        );
+      }
 
       await _sessionService.saveUser(user);
       await NotificationService().syncTokenAfterLogin();

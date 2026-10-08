@@ -33,7 +33,17 @@ services:
       UPLOADS_DIR: /data/uploads
     volumes:
       - uploads:/data/uploads
-      - ../backend/firebase-service-account.json:/app/firebase-service-account.json:ro
+      # Si el archivo no existe, compose avisa con un error claro (con la
+      # sintaxis corta Docker crearia una CARPETA con ese nombre y fallaria).
+      # Alternativa sin archivo: variable FIREBASE_CREDENTIALS_JSON en backend/.env
+      - type: bind
+        source: ../backend/firebase-service-account.json
+        target: /app/firebase-service-account.json
+        read_only: true
+        bind:
+          create_host_path: false
+    # SIN "ports": la API solo se alcanza por Caddy (HTTPS). Para probar en
+    # tu red local usa tambien docker-compose.local.yml (ver docs/DESPLIEGUE.md).
     depends_on:
       db:
         condition: service_healthy

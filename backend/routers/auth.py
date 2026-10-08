@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -16,8 +17,14 @@ from models.password_reset import PasswordReset
 from models.reservation import Reservation
 from models.user import User
 from email_service import send_password_reset_code
-from firebase_service import verify_id_token
-from rate_limit import client_ip, forgot_by_ip, login_by_account, login_by_ip
+from firebase_service import delete_firebase_user, verify_id_token
+from rate_limit import (
+    client_ip,
+    forgot_by_ip,
+    google_fail_by_ip,
+    login_by_account,
+    login_by_ip,
+)
 from reservation_rules import expire_overdue_reservations
 from routers.uploads import delete_pack_image_file
 from schemas.auth import (
@@ -30,7 +37,7 @@ from schemas.auth import (
     MessageResponse,
     ResetPasswordRequest,
 )
-from security import create_access_token, get_current_user
+from security import get_current_user, issue_token
 
 
 router = APIRouter(
@@ -86,9 +93,7 @@ def register(
     db.commit()
     db.refresh(new_user)
 
-    access_token = create_access_token(
-        data={"sub": str(new_user.id)},
-    )
+    access_token = issue_token(new_user)
 
     return AuthResponse(
         message="Usuario registrado correctamente",
@@ -152,9 +157,7 @@ def login(
 
     login_by_account.reset(account_key)
 
-    access_token = create_access_token(
-        data={"sub": str(user.id)},
-    )
+    access_token = issue_token(user)
 
     return AuthResponse(
         message="Inicio de sesión correcto",
@@ -172,15 +175,29 @@ def login(
 )
 def google_login(
     data: GoogleLoginRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    """Inicia sesión con Google mediante un Firebase ID token.
+    """Inicia sesión (o crea la cuenta) con un Firebase ID token de Google.
 
-    Firebase autentica la cuenta de Google en Flutter. El backend verifica
-    el ID token con Firebase Admin y después entrega el JWT propio de Rescate,
-    de modo que el resto de la API sigue usando el mismo mecanismo de auth.
+    Firebase autentica la cuenta de Google en Flutter. El backend verifica el
+    token y entrega el JWT propio de Rescate, así el resto de la API sigue
+    usando el mismo mecanismo de sesión.
     """
-    decoded = verify_id_token(data.id_token)
+    ip = client_ip(request)
+
+    if google_fail_by_ip.is_blocked(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
+        )
+
+    try:
+        decoded = verify_id_token(data.id_token)
+    except HTTPException as error:
+        if error.status_code == 401:
+            google_fail_by_ip.hit(ip)
+        raise
 
     firebase_uid = decoded.get("uid")
     email = (decoded.get("email") or "").strip().lower()
@@ -188,6 +205,7 @@ def google_login(
     email_verified = bool(decoded.get("email_verified", False))
 
     if not firebase_uid or not email or not email_verified:
+        google_fail_by_ip.hit(ip)
         raise HTTPException(
             status_code=401,
             detail="La cuenta de Google no tiene un correo válido verificado.",
@@ -199,31 +217,34 @@ def google_login(
         .first()
     )
 
-    # Si ya existía una cuenta normal con ese correo, la vinculamos a Google.
+    # Si ya existía una cuenta con ese correo, se vincula a Google.
+    linking_existing = False
+
     if user is None:
         user = (
             db.query(User)
             .filter(User.email == email)
             .first()
         )
+        linking_existing = user is not None
 
     if user is None:
-        # La contraseña nunca se muestra ni se usa para el login de Google.
-        # Dejamos un hash aleatorio para mantener compatibilidad con el modelo.
-        random_password_hash = pwd_context.hash(
-            secrets.token_urlsafe(48)
-        )
+        # Cuenta nueva: hay que saber si es cliente o negocio.
+        if data.is_business is None:
+            raise HTTPException(status_code=409, detail="ROLE_REQUIRED")
 
         user = User(
-            name=name[:100],
+            name=name[:100] or "Usuario Google",
             email=email[:150],
-            password_hash=random_password_hash,
+            # Nunca se usa para entrar; solo mantiene el modelo completo.
+            password_hash=pwd_context.hash(secrets.token_urlsafe(48)),
             firebase_uid=firebase_uid,
             auth_provider="google",
-            is_business=False,
+            is_business=bool(data.is_business),
             is_active=True,
         )
         db.add(user)
+
     else:
         if not user.is_active:
             raise HTTPException(
@@ -231,17 +252,19 @@ def google_login(
                 detail="El usuario está desactivado",
             )
 
-        user.firebase_uid = firebase_uid
-        user.auth_provider = "google"
-        if name and user.name != name[:100]:
-            user.name = name[:100]
+        if linking_existing:
+            # El registro por correo no verifica que el correo sea de quien
+            # lo escribió. Si alguien registró este correo antes que su
+            # dueño, no debe conservar el acceso: se anula la contraseña y
+            # se cierran las sesiones que ya existían. El dueño real puede
+            # crear otra con "Olvidé mi contraseña".
+            user.password_hash = pwd_context.hash(secrets.token_urlsafe(48))
+            user.token_version = (user.token_version or 0) + 1
+            user.firebase_uid = firebase_uid
+            user.auth_provider = "google"
 
     db.commit()
     db.refresh(user)
-
-    access_token = create_access_token(
-        data={"sub": str(user.id)},
-    )
 
     return AuthResponse(
         message="Inicio de sesión con Google correcto",
@@ -249,7 +272,7 @@ def google_login(
         name=user.name,
         email=user.email,
         is_business=user.is_business,
-        access_token=access_token,
+        access_token=issue_token(user),
     )
 
 
@@ -275,6 +298,62 @@ def get_me(
 # (Obligatorio en Google Play y App Store)
 # =========================================================
 
+def _confirm_identity(data: DeleteAccountRequest, user: User) -> None:
+    """La persona debe demostrar que es la dueña de la cuenta.
+
+    - Cuentas con contraseña: la contraseña.
+    - Cuentas de Google: un token de Google recién obtenido (la app le pide
+      volver a elegir su cuenta), de los últimos 5 minutos.
+    """
+    if data.password:
+        if pwd_context.verify(data.password, user.password_hash):
+            return
+
+        raise HTTPException(
+            status_code=400,
+            detail="La contraseña es incorrecta",
+        )
+
+    if data.id_token:
+        if not user.firebase_uid:
+            raise HTTPException(
+                status_code=400,
+                detail="Esta cuenta no está vinculada a Google",
+            )
+
+        try:
+            decoded = verify_id_token(data.id_token)
+        except HTTPException as error:
+            # 400 y no 401: un 401 haría creer a la app que la sesión expiró.
+            if error.status_code == 401:
+                raise HTTPException(status_code=400, detail=error.detail)
+            raise
+
+        if decoded.get("uid") != user.firebase_uid:
+            raise HTTPException(
+                status_code=400,
+                detail="La cuenta de Google no coincide con tu cuenta de Rescate",
+            )
+
+        auth_time = decoded.get("auth_time")
+
+        if (
+            not isinstance(auth_time, (int, float))
+            or time.time() - auth_time > 300
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Por seguridad, confirma de nuevo con Google e inténtalo otra vez",
+            )
+
+        return
+
+    raise HTTPException(
+        status_code=400,
+        detail="Confirma tu identidad con tu contraseña o con tu cuenta de Google",
+    )
+
+
 @router.post(
     "/delete-account",
     response_model=MessageResponse,
@@ -290,11 +369,7 @@ def delete_account(
     necesita para su contabilidad). No se puede eliminar la cuenta mientras
     haya reservas pendientes de retiro.
     """
-    if not pwd_context.verify(data.password, current_user.password_hash):
-        raise HTTPException(
-            status_code=400,
-            detail="La contraseña es incorrecta",
-        )
+    _confirm_identity(data, current_user)
 
     expire_overdue_reservations(db)
 
@@ -340,8 +415,15 @@ def delete_account(
                 ),
             )
 
-        # 2) Negocio: borrar packs sin historial, ocultar el resto y
-        #    quitar datos de contacto y fotos.
+    # 2) Google: se borra de Firebase (correo, nombre, foto) ANTES de tocar
+    #    la base de datos. Si Firebase falla, se cancela todo y la cuenta
+    #    queda intacta para reintentar.
+    if current_user.firebase_uid:
+        delete_firebase_user(current_user.firebase_uid)
+
+    # 3) Negocio: borrar packs sin historial, ocultar el resto y quitar
+    #    datos de contacto y fotos.
+    if business:
         packs = (
             db.query(FoodPack)
             .filter(FoodPack.business_id == business.id)
@@ -370,7 +452,7 @@ def delete_account(
         business.latitude = None
         business.longitude = None
 
-    # 3) Usuario: borrar datos personales y bloquear el acceso
+    # 4) Usuario: borrar datos personales y bloquear el acceso
     db.query(DeviceToken).filter(
         DeviceToken.user_id == current_user.id
     ).delete()
@@ -378,6 +460,9 @@ def delete_account(
     current_user.name = "Usuario eliminado"
     current_user.email = f"deleted-{current_user.id}@deleted.invalid"
     current_user.password_hash = pwd_context.hash(secrets.token_urlsafe(32))
+    current_user.firebase_uid = None  # libera la identidad de Google
+    current_user.auth_provider = "deleted"
+    current_user.token_version = (current_user.token_version or 0) + 1
     current_user.is_active = False
 
     db.commit()
@@ -538,6 +623,8 @@ def reset_password(
         raise invalid
 
     user.password_hash = pwd_context.hash(data.new_password)
+    # Cambiar la contrasena cierra todas las sesiones abiertas.
+    user.token_version = (user.token_version or 0) + 1
     reset.used = True
 
     db.query(PasswordReset).filter(

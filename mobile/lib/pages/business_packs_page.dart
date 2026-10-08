@@ -336,7 +336,6 @@ class _BusinessPacksPageState extends State<BusinessPacksPage> {
   Widget _buildPackCard(FoodPack pack) {
     final isAvailable = pack.status == 'available';
     final isPaused = pack.status == 'paused';
-    final isSoldOut = pack.status == 'sold_out';
     final isProcessing = _processingPackId == int.parse(pack.id);
 
     return Container(

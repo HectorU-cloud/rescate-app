@@ -15,6 +15,9 @@ class LoginRequest(BaseModel):
 
 class GoogleLoginRequest(BaseModel):
     id_token: str
+    # Solo importa al crear la cuenta. Si falta y la cuenta es nueva,
+    # el servidor responde 409 ROLE_REQUIRED para que la app pregunte.
+    is_business: bool | None = None
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -28,7 +31,10 @@ class ResetPasswordRequest(BaseModel):
 
 
 class DeleteAccountRequest(BaseModel):
-    password: str
+    # Cuentas con contrasena: la contrasena. Cuentas de Google: un
+    # ID token recien obtenido (confirma que sigue siendo la persona).
+    password: str = ""
+    id_token: str | None = None
 
 
 class MessageResponse(BaseModel):

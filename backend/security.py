@@ -33,6 +33,13 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def issue_token(user: User) -> str:
+    """JWT de sesion. Guarda la version: si cambia, el token deja de servir."""
+    return create_access_token(
+        data={"sub": str(user.id), "ver": user.token_version or 0},
+    )
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
@@ -53,13 +60,18 @@ def get_current_user(
             raise credentials_exception
 
         user_id = int(user_id_raw)
+        token_version = int(payload.get("ver", 0))
 
-    except (InvalidTokenError, ValueError):
+    except (InvalidTokenError, ValueError, TypeError):
         raise credentials_exception
 
     user = db.query(User).filter(User.id == user_id).first()
 
     if user is None:
+        raise credentials_exception
+
+    # Sesiones cerradas (cambio de contrasena, vinculacion con Google...)
+    if token_version != (user.token_version or 0):
         raise credentials_exception
 
     if not user.is_active:

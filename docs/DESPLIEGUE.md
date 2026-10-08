@@ -80,6 +80,29 @@ Prográmalas con `cron` y guarda los archivos **fuera** del servidor.
    el disco no le deja escribir, la app responderá "No pudimos guardar la foto"). Mientras tanto,
    los packs sin foto muestran su ícono.
 
+## Probar en tu computadora o red local
+
+El `docker-compose.yml` **no** expone la API directamente: solo Caddy (HTTPS) es público, para que
+nadie pueda saltarse el cifrado entrando por `http://IP:8000`. Para probar con el emulador o un
+teléfono en tu red, agrega el archivo de pruebas, que sí abre el puerto 8000:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+**Nunca** lo uses en el servidor de producción.
+
+## Después de actualizar el código con una base de datos que ya tiene datos
+
+Cuando una versión agrega columnas nuevas, ejecuta una vez:
+
+```bash
+docker compose exec app python migrate.py
+```
+
+(Es seguro repetirlo.) La versión que agregó el inicio de sesión con Google y el cierre de sesiones
+necesita esto. Las sesiones que ya estaban abiertas siguen funcionando.
+
 ## Lista de comprobación después de desplegar
 
 - [ ] `https://TU-DOMINIO/api/health` responde `healthy`.
@@ -97,6 +120,6 @@ Prográmalas con `cron` y guarda los archivos **fuera** del servidor.
 - **Límites de intentos** (login: 5 fallos por cuenta y 30 por IP cada 15 min; códigos de
   recuperación: 10 por IP por hora) viven en la memoria de cada proceso. Con un solo proceso, que
   es lo configurado, funcionan exacto; si algún día usas varios, conviene moverlos a Redis.
-- **Cambiar la contraseña no cierra las sesiones que ya estaban abiertas**; vencen solas.
+- **Cambiar la contraseña, o vincular una cuenta existente con Google, cierra todas las sesiones abiertas** de esa cuenta.
 - El `Dockerfile` y el `docker-compose.yml` **no se pudieron probar** al prepararlos (no había
   Docker disponible). Si algo falla al levantarlos, revisa `docker compose logs app`.

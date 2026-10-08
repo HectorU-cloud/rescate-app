@@ -1,0 +1,1570 @@
+diff --git a/README.md b/README.md
+index e83d7eb..ae9d8bc 100644
+--- a/README.md
++++ b/README.md
+@@ -17,6 +17,7 @@ App móvil para **rescatar comida** en Ecuador: panaderías, cafeterías y resta
+ - Notificaciones push (Firebase)
+ - Buscador y filtros por categoría
+ - Fotos de los packs (el negocio las sube desde su galería)
++- Registro e inicio de sesión con Google (cliente o negocio), además del correo y contraseña
+ - Recuperar contraseña con un código de 6 dígitos enviado por correo (Resend)
+ - Eliminar cuenta desde la app (requisito de Google Play y App Store) y páginas públicas `/privacy`, `/terms` y `/account-deletion`
+ - Reservas no retiradas: pasado el horario (+30 min de gracia) se marcan "No retirado"; con 3 en 30 días se bloquean nuevas reservas (configurable en `.env`)
+diff --git a/backend/.env.example b/backend/.env.example
+index dc9b9ae..2facf93 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -16,9 +16,8 @@ SUPPORT_EMAIL=
+ RESEND_API_KEY=
+ FROM_EMAIL=Rescate <rescate@tudominio.com>
+ # Firebase Admin: necesario para notificaciones y para validar Google Login.
+-# En hosting puedes usar el JSON del service account como texto o base64:
+-
+-# pega aqui el contenido de firebase-service-account.json (o su version base64)
++# En un hosting donde no puedas subir el archivo, pega aqui el contenido de
++# firebase-service-account.json (como texto o en base64):
+ # FIREBASE_CREDENTIALS_JSON=
+ 
+ # Carpeta de las fotos de los packs. En produccion debe ser un volumen
+diff --git a/backend/firebase_service.py b/backend/firebase_service.py
+index f75aafc..1eae4e6 100644
+--- a/backend/firebase_service.py
++++ b/backend/firebase_service.py
+@@ -1,5 +1,6 @@
+ import base64
+ import json
++import logging
+ import os
+ 
+ import firebase_admin
+@@ -7,6 +8,8 @@ from firebase_admin import auth, credentials, messaging
+ from fastapi import HTTPException
+ 
+ 
++logger = logging.getLogger("rescate.firebase")
++
+ SERVICE_ACCOUNT_PATH = os.path.join(
+     os.path.dirname(__file__),
+     "firebase-service-account.json",
+@@ -50,17 +53,55 @@ def _get_app():
+ 
+ 
+ def verify_id_token(id_token: str) -> dict:
+-    """Verifica un Firebase ID token y devuelve sus claims confiables."""
++    """Verifica un Firebase ID token y devuelve sus datos confiables."""
++    _get_app()  # si faltan credenciales, el error real (500) sube tal cual
++
+     try:
+-        _get_app()
+         return auth.verify_id_token(id_token)
+-    except Exception as error:
+-        print(f"❌ Firebase ID token inválido: {error}")
++
++    except (
++        auth.InvalidIdTokenError,
++        auth.ExpiredIdTokenError,
++        auth.RevokedIdTokenError,
++        ValueError,
++    ) as error:
++        logger.info("ID token rechazado: %s", error)
+         raise HTTPException(
+             status_code=401,
+             detail="No se pudo validar la cuenta de Google.",
+         )
+ 
++    except Exception:
++        # Sin red, certificados de Google no disponibles, etc.
++        logger.exception("Fallo inesperado al validar el ID token")
++        raise HTTPException(
++            status_code=503,
++            detail="No pudimos validar tu cuenta de Google ahora. Inténtalo más tarde.",
++        )
++
++
++def delete_firebase_user(uid: str) -> None:
++    """Borra al usuario de Firebase Authentication (correo, nombre, foto).
++
++    Si ya no existe se considera hecho. Cualquier otro fallo detiene la
++    eliminacion de la cuenta para no dejar datos personales olvidados.
++    """
++    _get_app()
++
++    try:
++        auth.delete_user(uid)
++
++    except auth.UserNotFoundError:
++        return
++
++    except Exception:
++        logger.exception("No se pudo borrar el usuario %s de Firebase", uid)
++        raise HTTPException(
++            status_code=503,
++            detail="No pudimos eliminar tu cuenta de Google ahora. Inténtalo más tarde.",
++        )
++
++
+ def send_push(
+     token: str,
+     title: str,
+diff --git a/backend/migrate.py b/backend/migrate.py
+index 4274310..a4ee212 100644
+--- a/backend/migrate.py
++++ b/backend/migrate.py
+@@ -49,6 +49,13 @@ def migrate():
+         """))
+         print("✅ users.auth_provider")
+ 
++        # Version de sesion: permite cerrar todas las sesiones de una cuenta.
++        conn.execute(text("""
++            ALTER TABLE users
++            ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0 NOT NULL
++        """))
++        print("✅ users.token_version")
++
+         # 👇 NUEVA COLUMNA
+         conn.execute(text("""
+             ALTER TABLE reservations
+diff --git a/backend/models/user.py b/backend/models/user.py
+index bb9723e..fd14c8f 100644
+--- a/backend/models/user.py
++++ b/backend/models/user.py
+@@ -1,6 +1,6 @@
+ from datetime import datetime
+ 
+-from sqlalchemy import Boolean, DateTime, String
++from sqlalchemy import Boolean, DateTime, Integer, String
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from database import Base
+@@ -47,6 +47,15 @@ class User(Base):
+         nullable=False,
+     )
+ 
++    # Se suma 1 para cerrar TODAS las sesiones abiertas de esta cuenta
++    # (los JWT guardan la version con la que se emitieron).
++    token_version: Mapped[int] = mapped_column(
++        Integer,
++        default=0,
++        server_default="0",
++        nullable=False,
++    )
++
+     is_business: Mapped[bool] = mapped_column(
+         Boolean,
+         default=False,
+diff --git a/backend/rate_limit.py b/backend/rate_limit.py
+index 0cb2446..88b6bd7 100644
+--- a/backend/rate_limit.py
++++ b/backend/rate_limit.py
+@@ -56,6 +56,9 @@ class AttemptLimiter:
+ login_by_account = AttemptLimiter(max_attempts=5, window_seconds=15 * 60)
+ login_by_ip = AttemptLimiter(max_attempts=30, window_seconds=15 * 60)
+ 
++# Tokens de Google invalidos por IP.
++google_fail_by_ip = AttemptLimiter(max_attempts=20, window_seconds=15 * 60)
++
+ # Solicitudes de codigo de recuperacion por IP (evita llenar buzones ajenos).
+ forgot_by_ip = AttemptLimiter(max_attempts=10, window_seconds=60 * 60)
+ 
+@@ -66,5 +69,5 @@ def client_ip(request) -> str:
+ 
+ def reset_all() -> None:
+     """Para las pruebas."""
+-    for limiter in (login_by_account, login_by_ip, forgot_by_ip):
++    for limiter in (login_by_account, login_by_ip, forgot_by_ip, google_fail_by_ip):
+         limiter.clear()
+diff --git a/backend/routers/auth.py b/backend/routers/auth.py
+index 3566624..2fa14a4 100644
+--- a/backend/routers/auth.py
++++ b/backend/routers/auth.py
+@@ -2,6 +2,7 @@ import hashlib
+ import hmac
+ import os
+ import secrets
++import time
+ from datetime import datetime, timedelta
+ 
+ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+@@ -16,8 +17,14 @@ from models.password_reset import PasswordReset
+ from models.reservation import Reservation
+ from models.user import User
+ from email_service import send_password_reset_code
+-from firebase_service import verify_id_token
+-from rate_limit import client_ip, forgot_by_ip, login_by_account, login_by_ip
++from firebase_service import delete_firebase_user, verify_id_token
++from rate_limit import (
++    client_ip,
++    forgot_by_ip,
++    google_fail_by_ip,
++    login_by_account,
++    login_by_ip,
++)
+ from reservation_rules import expire_overdue_reservations
+ from routers.uploads import delete_pack_image_file
+ from schemas.auth import (
+@@ -30,7 +37,7 @@ from schemas.auth import (
+     MessageResponse,
+     ResetPasswordRequest,
+ )
+-from security import create_access_token, get_current_user
++from security import get_current_user, issue_token
+ 
+ 
+ router = APIRouter(
+@@ -86,9 +93,7 @@ def register(
+     db.commit()
+     db.refresh(new_user)
+ 
+-    access_token = create_access_token(
+-        data={"sub": str(new_user.id)},
+-    )
++    access_token = issue_token(new_user)
+ 
+     return AuthResponse(
+         message="Usuario registrado correctamente",
+@@ -152,9 +157,7 @@ def login(
+ 
+     login_by_account.reset(account_key)
+ 
+-    access_token = create_access_token(
+-        data={"sub": str(user.id)},
+-    )
++    access_token = issue_token(user)
+ 
+     return AuthResponse(
+         message="Inicio de sesión correcto",
+@@ -172,15 +175,29 @@ def login(
+ )
+ def google_login(
+     data: GoogleLoginRequest,
++    request: Request,
+     db: Session = Depends(get_db),
+ ):
+-    """Inicia sesión con Google mediante un Firebase ID token.
++    """Inicia sesión (o crea la cuenta) con un Firebase ID token de Google.
+ 
+-    Firebase autentica la cuenta de Google en Flutter. El backend verifica
+-    el ID token con Firebase Admin y después entrega el JWT propio de Rescate,
+-    de modo que el resto de la API sigue usando el mismo mecanismo de auth.
++    Firebase autentica la cuenta de Google en Flutter. El backend verifica el
++    token y entrega el JWT propio de Rescate, así el resto de la API sigue
++    usando el mismo mecanismo de sesión.
+     """
+-    decoded = verify_id_token(data.id_token)
++    ip = client_ip(request)
++
++    if google_fail_by_ip.is_blocked(ip):
++        raise HTTPException(
++            status_code=429,
++            detail="Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
++        )
++
++    try:
++        decoded = verify_id_token(data.id_token)
++    except HTTPException as error:
++        if error.status_code == 401:
++            google_fail_by_ip.hit(ip)
++        raise
+ 
+     firebase_uid = decoded.get("uid")
+     email = (decoded.get("email") or "").strip().lower()
+@@ -188,6 +205,7 @@ def google_login(
+     email_verified = bool(decoded.get("email_verified", False))
+ 
+     if not firebase_uid or not email or not email_verified:
++        google_fail_by_ip.hit(ip)
+         raise HTTPException(
+             status_code=401,
+             detail="La cuenta de Google no tiene un correo válido verificado.",
+@@ -199,31 +217,34 @@ def google_login(
+         .first()
+     )
+ 
+-    # Si ya existía una cuenta normal con ese correo, la vinculamos a Google.
++    # Si ya existía una cuenta con ese correo, se vincula a Google.
++    linking_existing = False
++
+     if user is None:
+         user = (
+             db.query(User)
+             .filter(User.email == email)
+             .first()
+         )
++        linking_existing = user is not None
+ 
+     if user is None:
+-        # La contraseña nunca se muestra ni se usa para el login de Google.
+-        # Dejamos un hash aleatorio para mantener compatibilidad con el modelo.
+-        random_password_hash = pwd_context.hash(
+-            secrets.token_urlsafe(48)
+-        )
++        # Cuenta nueva: hay que saber si es cliente o negocio.
++        if data.is_business is None:
++            raise HTTPException(status_code=409, detail="ROLE_REQUIRED")
+ 
+         user = User(
+-            name=name[:100],
++            name=name[:100] or "Usuario Google",
+             email=email[:150],
+-            password_hash=random_password_hash,
++            # Nunca se usa para entrar; solo mantiene el modelo completo.
++            password_hash=pwd_context.hash(secrets.token_urlsafe(48)),
+             firebase_uid=firebase_uid,
+             auth_provider="google",
+-            is_business=False,
++            is_business=bool(data.is_business),
+             is_active=True,
+         )
+         db.add(user)
++
+     else:
+         if not user.is_active:
+             raise HTTPException(
+@@ -231,25 +252,27 @@ def google_login(
+                 detail="El usuario está desactivado",
+             )
+ 
+-        user.firebase_uid = firebase_uid
+-        user.auth_provider = "google"
+-        if name and user.name != name[:100]:
+-            user.name = name[:100]
++        if linking_existing:
++            # El registro por correo no verifica que el correo sea de quien
++            # lo escribió. Si alguien registró este correo antes que su
++            # dueño, no debe conservar el acceso: se anula la contraseña y
++            # se cierran las sesiones que ya existían. El dueño real puede
++            # crear otra con "Olvidé mi contraseña".
++            user.password_hash = pwd_context.hash(secrets.token_urlsafe(48))
++            user.token_version = (user.token_version or 0) + 1
++            user.firebase_uid = firebase_uid
++            user.auth_provider = "google"
+ 
+     db.commit()
+     db.refresh(user)
+ 
+-    access_token = create_access_token(
+-        data={"sub": str(user.id)},
+-    )
+-
+     return AuthResponse(
+         message="Inicio de sesión con Google correcto",
+         user_id=user.id,
+         name=user.name,
+         email=user.email,
+         is_business=user.is_business,
+-        access_token=access_token,
++        access_token=issue_token(user),
+     )
+ 
+ 
+@@ -275,6 +298,62 @@ def get_me(
+ # (Obligatorio en Google Play y App Store)
+ # =========================================================
+ 
++def _confirm_identity(data: DeleteAccountRequest, user: User) -> None:
++    """La persona debe demostrar que es la dueña de la cuenta.
++
++    - Cuentas con contraseña: la contraseña.
++    - Cuentas de Google: un token de Google recién obtenido (la app le pide
++      volver a elegir su cuenta), de los últimos 5 minutos.
++    """
++    if data.password:
++        if pwd_context.verify(data.password, user.password_hash):
++            return
++
++        raise HTTPException(
++            status_code=400,
++            detail="La contraseña es incorrecta",
++        )
++
++    if data.id_token:
++        if not user.firebase_uid:
++            raise HTTPException(
++                status_code=400,
++                detail="Esta cuenta no está vinculada a Google",
++            )
++
++        try:
++            decoded = verify_id_token(data.id_token)
++        except HTTPException as error:
++            # 400 y no 401: un 401 haría creer a la app que la sesión expiró.
++            if error.status_code == 401:
++                raise HTTPException(status_code=400, detail=error.detail)
++            raise
++
++        if decoded.get("uid") != user.firebase_uid:
++            raise HTTPException(
++                status_code=400,
++                detail="La cuenta de Google no coincide con tu cuenta de Rescate",
++            )
++
++        auth_time = decoded.get("auth_time")
++
++        if (
++            not isinstance(auth_time, (int, float))
++            or time.time() - auth_time > 300
++        ):
++            raise HTTPException(
++                status_code=400,
++                detail="Por seguridad, confirma de nuevo con Google e inténtalo otra vez",
++            )
++
++        return
++
++    raise HTTPException(
++        status_code=400,
++        detail="Confirma tu identidad con tu contraseña o con tu cuenta de Google",
++    )
++
++
+ @router.post(
+     "/delete-account",
+     response_model=MessageResponse,
+@@ -290,11 +369,7 @@ def delete_account(
+     necesita para su contabilidad). No se puede eliminar la cuenta mientras
+     haya reservas pendientes de retiro.
+     """
+-    if not pwd_context.verify(data.password, current_user.password_hash):
+-        raise HTTPException(
+-            status_code=400,
+-            detail="La contraseña es incorrecta",
+-        )
++    _confirm_identity(data, current_user)
+ 
+     expire_overdue_reservations(db)
+ 
+@@ -340,8 +415,15 @@ def delete_account(
+                 ),
+             )
+ 
+-        # 2) Negocio: borrar packs sin historial, ocultar el resto y
+-        #    quitar datos de contacto y fotos.
++    # 2) Google: se borra de Firebase (correo, nombre, foto) ANTES de tocar
++    #    la base de datos. Si Firebase falla, se cancela todo y la cuenta
++    #    queda intacta para reintentar.
++    if current_user.firebase_uid:
++        delete_firebase_user(current_user.firebase_uid)
++
++    # 3) Negocio: borrar packs sin historial, ocultar el resto y quitar
++    #    datos de contacto y fotos.
++    if business:
+         packs = (
+             db.query(FoodPack)
+             .filter(FoodPack.business_id == business.id)
+@@ -370,7 +452,7 @@ def delete_account(
+         business.latitude = None
+         business.longitude = None
+ 
+-    # 3) Usuario: borrar datos personales y bloquear el acceso
++    # 4) Usuario: borrar datos personales y bloquear el acceso
+     db.query(DeviceToken).filter(
+         DeviceToken.user_id == current_user.id
+     ).delete()
+@@ -378,6 +460,9 @@ def delete_account(
+     current_user.name = "Usuario eliminado"
+     current_user.email = f"deleted-{current_user.id}@deleted.invalid"
+     current_user.password_hash = pwd_context.hash(secrets.token_urlsafe(32))
++    current_user.firebase_uid = None  # libera la identidad de Google
++    current_user.auth_provider = "deleted"
++    current_user.token_version = (current_user.token_version or 0) + 1
+     current_user.is_active = False
+ 
+     db.commit()
+@@ -538,6 +623,8 @@ def reset_password(
+         raise invalid
+ 
+     user.password_hash = pwd_context.hash(data.new_password)
++    # Cambiar la contrasena cierra todas las sesiones abiertas.
++    user.token_version = (user.token_version or 0) + 1
+     reset.used = True
+ 
+     db.query(PasswordReset).filter(
+diff --git a/backend/routers/legal.py b/backend/routers/legal.py
+index e6882c3..6ded759 100644
+--- a/backend/routers/legal.py
++++ b/backend/routers/legal.py
+@@ -81,6 +81,9 @@ Protección de Datos Personales de Ecuador.</p>
+ <ul>
+   <li><strong>Cuenta:</strong> nombre, correo electrónico y contraseña
+       (la guardamos cifrada; nosotros no podemos verla).</li>
++  <li><strong>Inicio de sesión con Google (opcional):</strong> si eliges entrar
++      con Google, recibimos tu nombre, tu correo verificado y un identificador de
++      tu cuenta de Google. No recibimos tu contraseña de Google.</li>
+   <li><strong>Reservas:</strong> qué pack reservaste, cantidad, monto, método
+       de pago, estado (reservado, retirado, cancelado o no retirado) y fechas.</li>
+   <li><strong>Si eres un negocio:</strong> nombre del local, descripción,
+@@ -119,6 +122,8 @@ de tarjetas</strong>.</p>
+   <li><strong>Resend</strong>, servicio de envío de correo, procesa tu correo
+       electrónico y el código de verificación cuando recuperas tu
+       contraseña.</li>
++  <li><strong>Google (Firebase Authentication)</strong> procesa tu cuenta de
++      Google cuando eliges iniciar sesión con ella.</li>
+   <li><strong>OpenStreetMap:</strong> al ver el mapa, tu dispositivo descarga
+       imágenes del mapa desde sus servidores, que reciben tu dirección IP.</li>
+   <li><strong>Proveedor de alojamiento del servidor</strong>, que almacena la
+@@ -271,6 +276,8 @@ solicitud en un máximo de 15 días.</p>
+ <h2>Qué se elimina</h2>
+ <ul>
+   <li>Tu nombre, correo y contraseña.</li>
++  <li>Si entraste con Google, también eliminamos tu cuenta de nuestro sistema de
++      acceso (Firebase Authentication). Tu cuenta de Google no se toca.</li>
+   <li>Los identificadores de tu dispositivo para notificaciones.</li>
+   <li>Si eres un negocio: tu teléfono, dirección, ubicación, descripción y las
+       fotos de tus packs; tus packs dejan de mostrarse.</li>
+diff --git a/backend/routers/reservations.py b/backend/routers/reservations.py
+index e404dd4..7e8a27a 100644
+--- a/backend/routers/reservations.py
++++ b/backend/routers/reservations.py
+@@ -32,6 +32,11 @@ router = APIRouter(
+ 
+ SERVICE_FEE = Decimal("0.25")
+ 
++# Metodos de pago que el servidor acepta. "online" NO esta aqui a proposito:
++# una reserva "pagada online" sin cobro real regalaria la comida. Se agrega
++# cuando exista un pago verificado (Payphone).
++ACCEPTED_PAYMENT_METHODS = ("cash",)
++
+ 
+ def _reservation_code(db: Session) -> str:
+     for _ in range(10):
+@@ -348,10 +353,10 @@ def create_reservation(
+             detail="No hay suficientes unidades disponibles",
+         )
+ 
+-    if data.payment_method not in ("online", "cash"):
++    if data.payment_method not in ACCEPTED_PAYMENT_METHODS:
+         raise HTTPException(
+             status_code=400,
+-            detail="Método de pago inválido",
++            detail="Por ahora solo se acepta pago en efectivo al retirar",
+         )
+ 
+     subtotal = Decimal(str(pack.price)) * data.quantity
+diff --git a/backend/schemas/auth.py b/backend/schemas/auth.py
+index aa972fe..b0cc448 100644
+--- a/backend/schemas/auth.py
++++ b/backend/schemas/auth.py
+@@ -15,6 +15,9 @@ class LoginRequest(BaseModel):
+ 
+ class GoogleLoginRequest(BaseModel):
+     id_token: str
++    # Solo importa al crear la cuenta. Si falta y la cuenta es nueva,
++    # el servidor responde 409 ROLE_REQUIRED para que la app pregunte.
++    is_business: bool | None = None
+ 
+ 
+ class ForgotPasswordRequest(BaseModel):
+@@ -28,7 +31,10 @@ class ResetPasswordRequest(BaseModel):
+ 
+ 
+ class DeleteAccountRequest(BaseModel):
+-    password: str
++    # Cuentas con contrasena: la contrasena. Cuentas de Google: un
++    # ID token recien obtenido (confirma que sigue siendo la persona).
++    password: str = ""
++    id_token: str | None = None
+ 
+ 
+ class MessageResponse(BaseModel):
+diff --git a/backend/schemas/reservation.py b/backend/schemas/reservation.py
+index 9b0a1b8..51fd159 100644
+--- a/backend/schemas/reservation.py
++++ b/backend/schemas/reservation.py
+@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
+ class ReservationCreate(BaseModel):
+     food_pack_id: int
+     quantity: int = Field(gt=0)
+-    payment_method: str = "online"
++    payment_method: str = "cash"
+ 
+ 
+ class ReservationResponse(BaseModel):
+diff --git a/backend/security.py b/backend/security.py
+index ee25fb5..543a761 100644
+--- a/backend/security.py
++++ b/backend/security.py
+@@ -33,6 +33,13 @@ def create_access_token(data: dict) -> str:
+     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+ 
+ 
++def issue_token(user: User) -> str:
++    """JWT de sesion. Guarda la version: si cambia, el token deja de servir."""
++    return create_access_token(
++        data={"sub": str(user.id), "ver": user.token_version or 0},
++    )
++
++
+ def get_current_user(
+     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+     db: Session = Depends(get_db),
+@@ -53,8 +60,9 @@ def get_current_user(
+             raise credentials_exception
+ 
+         user_id = int(user_id_raw)
++        token_version = int(payload.get("ver", 0))
+ 
+-    except (InvalidTokenError, ValueError):
++    except (InvalidTokenError, ValueError, TypeError):
+         raise credentials_exception
+ 
+     user = db.query(User).filter(User.id == user_id).first()
+@@ -62,6 +70,10 @@ def get_current_user(
+     if user is None:
+         raise credentials_exception
+ 
++    # Sesiones cerradas (cambio de contrasena, vinculacion con Google...)
++    if token_version != (user.token_version or 0):
++        raise credentials_exception
++
+     if not user.is_active:
+         raise HTTPException(
+             status_code=status.HTTP_403_FORBIDDEN,
+diff --git a/backend/tests/test_google_login.py b/backend/tests/test_google_login.py
+new file mode 100644
+index 0000000..8d90ae5
+--- /dev/null
++++ b/backend/tests/test_google_login.py
+@@ -0,0 +1,378 @@
++"""Inicio de sesion con Google, eliminacion de cuenta, sesiones y pago online."""
++import time
++
++import pytest
++from fastapi import HTTPException
++
++import firebase_service
++from database import SessionLocal
++from models.user import User
++from security import create_access_token
++
++
++def claims(uid="fb-uid-1", email="ana@gmail.com", name="Ana G", verified=True, auth_age=0):
++    return {
++        "uid": uid,
++        "email": email,
++        "name": name,
++        "email_verified": verified,
++        "auth_time": time.time() - auth_age,
++    }
++
++
++@pytest.fixture
++def google(monkeypatch):
++    """Simula a Firebase: `state["claims"]` es lo que 'dice' el token."""
++    state = {"claims": claims(), "deleted": [], "delete_error": None}
++
++    def fake_verify(token):
++        if isinstance(state["claims"], Exception):
++            raise state["claims"]
++        return state["claims"]
++
++    def fake_delete(uid):
++        if state["delete_error"]:
++            raise state["delete_error"]
++        state["deleted"].append(uid)
++
++    monkeypatch.setattr("routers.auth.verify_id_token", fake_verify)
++    monkeypatch.setattr("routers.auth.delete_firebase_user", fake_delete)
++    return state
++
++
++def _g(api, is_business=None, token="x"):
++    body = {"id_token": token}
++    if is_business is not None:
++        body["is_business"] = is_business
++    return api.c.post("/api/auth/google", json=body)
++
++
++def _h(resp):
++    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
++
++
++def _user(email):
++    with SessionLocal() as db:
++        return db.query(User).filter_by(email=email).first()
++
++
++# ---------- crear cuenta y rol ----------
++
++def test_cuenta_nueva_sin_rol_pide_elegirlo_y_no_crea_nada(api, google):
++    r = _g(api)
++    assert r.status_code == 409
++    assert r.json()["detail"] == "ROLE_REQUIRED"
++    assert _user("ana@gmail.com") is None
++
++
++def test_cuenta_nueva_de_cliente(api, google):
++    r = _g(api, is_business=False)
++    assert r.status_code == 200, r.text
++    assert r.json()["is_business"] is False
++
++    user = _user("ana@gmail.com")
++    assert user.firebase_uid == "fb-uid-1" and user.auth_provider == "google"
++
++
++def test_cuenta_nueva_de_negocio_puede_crear_su_negocio(api, google):
++    r = _g(api, is_business=True)
++    assert r.status_code == 200 and r.json()["is_business"] is True
++
++    created = api.c.post(
++        "/api/businesses",
++        headers=_h(r),
++        json={"name": "Café Ana", "address": "Calle 1", "city": "Guayaquil"},
++    )
++    assert created.status_code == 201, created.text
++
++
++def test_un_cliente_no_puede_volverse_negocio_pidiendolo_al_entrar(api, google):
++    first = _g(api, is_business=False)
++    again = _g(api, is_business=True)  # intento de escalar el rol
++
++    assert again.status_code == 200
++    assert again.json()["user_id"] == first.json()["user_id"]
++    assert again.json()["is_business"] is False
++
++
++def test_entrar_de_nuevo_no_cambia_el_nombre_elegido(api, google):
++    _g(api, is_business=False)
++    with SessionLocal() as db:
++        db.query(User).filter_by(email="ana@gmail.com").update({"name": "Ana Personalizada"})
++        db.commit()
++
++    google["claims"] = claims(name="Otro Nombre De Google")
++    assert _g(api).json()["name"] == "Ana Personalizada"
++
++
++# ---------- tokens invalidos ----------
++
++def test_correo_sin_verificar_se_rechaza(api, google):
++    google["claims"] = claims(verified=False)
++    assert _g(api, is_business=False).status_code == 401
++
++
++def test_sin_correo_se_rechaza(api, google):
++    google["claims"] = claims(email="")
++    assert _g(api, is_business=False).status_code == 401
++
++
++def test_token_invalido_se_rechaza_y_tras_muchos_intentos_se_bloquea(api, google):
++    google["claims"] = HTTPException(401, "No se pudo validar la cuenta de Google.")
++
++    codes = [_g(api, is_business=False).status_code for _ in range(25)]
++
++    assert codes[0] == 401
++    assert codes[-1] == 429
++
++
++def test_un_fallo_de_firebase_no_cuenta_como_ataque(api, google):
++    google["claims"] = HTTPException(503, "Firebase no responde")
++
++    codes = {_g(api, is_business=False).status_code for _ in range(25)}
++    assert codes == {503}
++
++
++def test_usuario_desactivado_no_entra(api, google):
++    _g(api, is_business=False)
++    with SessionLocal() as db:
++        db.query(User).filter_by(email="ana@gmail.com").update({"is_active": False})
++        db.commit()
++
++    assert _g(api).status_code == 403
++
++
++# ---------- vincular con una cuenta existente ----------
++
++def test_vincular_cuenta_existente_anula_la_clave_y_las_sesiones_previas(api, google):
++    """El atacante registro el correo de Ana antes que ella."""
++    r = api.c.post(
++        "/api/auth/register",
++        json={"name": "Atacante", "email": "ana@gmail.com", "password": "clave-atacante"},
++    )
++    attacker_headers = _h(r)
++    assert api.c.get("/api/auth/me", headers=attacker_headers).status_code == 200
++
++    ana = _g(api)  # Ana entra con Google: se vincula (cuenta ya existente)
++    assert ana.status_code == 200
++    assert ana.json()["user_id"] == r.json()["user_id"]
++
++    # El atacante ya no puede entrar ni con su clave ni con su sesion vieja
++    login = api.c.post("/api/auth/login", json={"email": "ana@gmail.com", "password": "clave-atacante"})
++    assert login.status_code == 401
++    assert api.c.get("/api/auth/me", headers=attacker_headers).status_code == 401
++
++    # Ana sigue entrando
++    assert api.c.get("/api/auth/me", headers=_h(ana)).status_code == 200
++
++
++def test_entrar_otra_vez_con_google_no_cierra_la_sesion_anterior(api, google):
++    first = _g(api, is_business=False)
++    _g(api)  # segundo inicio con la misma identidad
++
++    assert api.c.get("/api/auth/me", headers=_h(first)).status_code == 200
++
++
++def test_la_dueña_recupera_una_clave_propia_con_el_correo(api, google, monkeypatch):
++    api.c.post("/api/auth/register", json={"name": "X", "email": "ana@gmail.com", "password": "clave-atacante"})
++    _g(api)
++
++    sent = []
++    monkeypatch.setattr("routers.auth.send_password_reset_code", lambda to, name, code, m: sent.append(code) or True)
++    api.c.post("/api/auth/forgot-password", json={"email": "ana@gmail.com"})
++    r = api.c.post(
++        "/api/auth/reset-password",
++        json={"email": "ana@gmail.com", "code": sent[0], "new_password": "clave-de-ana"},
++    )
++    assert r.status_code == 200
++
++    login = api.c.post("/api/auth/login", json={"email": "ana@gmail.com", "password": "clave-de-ana"})
++    assert login.status_code == 200
++
++
++# ---------- cerrar sesiones ----------
++
++def test_cambiar_la_contrasena_cierra_las_sesiones_abiertas(api, monkeypatch):
++    user = api.register()
++    assert api.c.get("/api/auth/me", headers=user["headers"]).status_code == 200
++
++    sent = []
++    monkeypatch.setattr("routers.auth.send_password_reset_code", lambda to, name, code, m: sent.append(code) or True)
++    api.c.post("/api/auth/forgot-password", json={"email": "user1@test.com"})
++    api.c.post(
++        "/api/auth/reset-password",
++        json={"email": "user1@test.com", "code": sent[0], "new_password": "nueva-clave"},
++    )
++
++    assert api.c.get("/api/auth/me", headers=user["headers"]).status_code == 401
++
++    login = api.c.post("/api/auth/login", json={"email": "user1@test.com", "password": "nueva-clave"})
++    assert api.c.get("/api/auth/me", headers=_h(login)).status_code == 200
++
++
++def test_las_sesiones_emitidas_antes_de_esta_version_siguen_valiendo(api):
++    """Tokens viejos (sin 'ver') deben funcionar mientras la version sea 0."""
++    user = api.register()
++    old_style = create_access_token({"sub": str(user["id"])})
++
++    r = api.c.get("/api/auth/me", headers={"Authorization": f"Bearer {old_style}"})
++    assert r.status_code == 200
++
++
++# ---------- eliminar cuenta de Google ----------
++
++def test_usuario_de_google_elimina_su_cuenta_y_se_borra_de_firebase(api, google):
++    r = _g(api, is_business=False)
++
++    d = api.c.post("/api/auth/delete-account", headers=_h(r), json={"id_token": "fresco"})
++    assert d.status_code == 200, d.text
++
++    assert google["deleted"] == ["fb-uid-1"]
++    user = api.c.get("/api/auth/me", headers=_h(r))
++    assert user.status_code in (401, 403)
++
++    with SessionLocal() as db:
++        row = db.get(User, r.json()["user_id"])
++        assert row.firebase_uid is None
++        assert row.is_active is False
++        assert "ana@gmail.com" not in row.email
++
++
++def test_quien_elimino_su_cuenta_puede_volver_a_registrarse_con_google(api, google):
++    first = _g(api, is_business=False)
++    api.c.post("/api/auth/delete-account", headers=_h(first), json={"id_token": "fresco"})
++
++    again = _g(api, is_business=False)
++    assert again.status_code == 200, again.text
++    assert again.json()["user_id"] != first.json()["user_id"]
++
++
++def test_eliminar_exige_una_confirmacion_reciente_de_google(api, google):
++    r = _g(api, is_business=False)
++    google["claims"] = claims(auth_age=600)  # el inicio fue hace 10 min
++
++    d = api.c.post("/api/auth/delete-account", headers=_h(r), json={"id_token": "viejo"})
++    assert d.status_code == 400
++    assert google["deleted"] == []
++    assert api.c.get("/api/auth/me", headers=_h(r)).status_code == 200
++
++
++def test_eliminar_con_la_cuenta_de_google_de_otra_persona_falla(api, google):
++    r = _g(api, is_business=False)
++    google["claims"] = claims(uid="otro-uid", email="otra@gmail.com")
++
++    d = api.c.post("/api/auth/delete-account", headers=_h(r), json={"id_token": "x"})
++    assert d.status_code == 400
++    assert google["deleted"] == []
++
++
++def test_eliminar_sin_ninguna_confirmacion_falla(api, google):
++    r = _g(api, is_business=False)
++    d = api.c.post("/api/auth/delete-account", headers=_h(r), json={})
++    assert d.status_code == 400
++
++
++def test_token_de_google_en_cuenta_sin_google_falla(api, google):
++    user = api.register()
++    d = api.c.post("/api/auth/delete-account", headers=user["headers"], json={"id_token": "x"})
++    assert d.status_code == 400
++
++
++def test_si_firebase_falla_la_cuenta_no_se_elimina(api, google):
++    r = _g(api, is_business=False)
++    google["delete_error"] = HTTPException(503, "Firebase caido")
++
++    d = api.c.post("/api/auth/delete-account", headers=_h(r), json={"id_token": "fresco"})
++    assert d.status_code == 503
++
++    row = _user("ana@gmail.com")
++    assert row.is_active is True and row.firebase_uid == "fb-uid-1"
++    assert api.c.get("/api/auth/me", headers=_h(r)).status_code == 200
++
++
++def test_las_reservas_pendientes_bloquean_antes_de_tocar_firebase(api, google):
++    owner = api.business()
++    r = _g(api, is_business=False)
++    customer = {"headers": _h(r)}
++    assert api.reserve(customer, api.pack(owner)).status_code == 201
++
++    d = api.c.post("/api/auth/delete-account", headers=_h(r), json={"id_token": "fresco"})
++    assert d.status_code == 400
++    assert google["deleted"] == []
++
++
++def test_cuenta_con_contrasena_no_toca_firebase(api, google):
++    user = api.register()
++    d = api.c.post("/api/auth/delete-account", headers=user["headers"], json={"password": "secret123"})
++    assert d.status_code == 200
++    assert google["deleted"] == []
++
++
++# ---------- firebase_service ----------
++
++def test_verify_id_token_traduce_los_errores(monkeypatch):
++    monkeypatch.setattr(firebase_service, "_get_app", lambda: None)
++
++    def invalido(token):
++        raise firebase_service.auth.InvalidIdTokenError("malo")
++
++    monkeypatch.setattr(firebase_service.auth, "verify_id_token", invalido)
++    with pytest.raises(HTTPException) as e:
++        firebase_service.verify_id_token("x")
++    assert e.value.status_code == 401
++
++    def caido(token):
++        raise ConnectionError("sin red")
++
++    monkeypatch.setattr(firebase_service.auth, "verify_id_token", caido)
++    with pytest.raises(HTTPException) as e:
++        firebase_service.verify_id_token("x")
++    assert e.value.status_code == 503  # no se disfraza de "token invalido"
++
++
++def test_delete_firebase_user(monkeypatch):
++    monkeypatch.setattr(firebase_service, "_get_app", lambda: None)
++
++    def no_existe(uid):
++        raise firebase_service.auth.UserNotFoundError("ya no existe")
++
++    monkeypatch.setattr(firebase_service.auth, "delete_user", no_existe)
++    assert firebase_service.delete_firebase_user("u") is None  # ya borrado: ok
++
++    def falla(uid):
++        raise RuntimeError("boom")
++
++    monkeypatch.setattr(firebase_service.auth, "delete_user", falla)
++    with pytest.raises(HTTPException) as e:
++        firebase_service.delete_firebase_user("u")
++    assert e.value.status_code == 503
++
++
++# ---------- pago online ----------
++
++def test_el_pago_online_se_rechaza_hasta_que_exista_cobro_real(api):
++    owner = api.business()
++    customer = api.register()
++    pack_id = api.pack(owner)
++
++    r = api.c.post(
++        "/api/reservations",
++        headers=customer["headers"],
++        json={"food_pack_id": pack_id, "quantity": 1, "payment_method": "online"},
++    )
++    assert r.status_code == 400
++    assert "efectivo" in r.json()["detail"]
++    assert api.pack_quantity(pack_id) == 2  # no se descontó stock
++
++
++def test_sin_indicar_metodo_de_pago_es_efectivo(api):
++    owner = api.business()
++    customer = api.register()
++    r = api.c.post(
++        "/api/reservations",
++        headers=customer["headers"],
++        json={"food_pack_id": api.pack(owner), "quantity": 1},
++    )
++    assert r.status_code == 201
++    assert r.json()["payment_method"] == "cash"
++    assert r.json()["amount_to_collect"] > 0
+diff --git a/deploy/docker-compose.local.yml b/deploy/docker-compose.local.yml
+index 8f3f644..76c8525 100644
+--- a/deploy/docker-compose.local.yml
++++ b/deploy/docker-compose.local.yml
+@@ -1,12 +1,11 @@
+-# Override SOLO para desarrollo local.
+-# Uso:
++# SOLO para pruebas en tu computadora o red local: expone la API sin HTTPS en
++# el puerto 8000 (http://IP-DE-TU-PC:8000), por ejemplo para el emulador o un
++# telefono en tu misma red.
++#
+ #   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+ #
+-# Expone el puerto 8000 para que tu celular o emulador puedan
+-# alcanzar la API directamente (sin pasar por Caddy).
+-# NUNCA uses este archivo en producción.
+-
++# NUNCA lo uses en el servidor de produccion.
+ services:
+   app:
+     ports:
+-      - "8000:8000"
+\ No newline at end of file
++      - "8000:8000"
+diff --git a/deploy/docker-compose.yml b/deploy/docker-compose.yml
+index 34cb903..2c64677 100644
+--- a/deploy/docker-compose.yml
++++ b/deploy/docker-compose.yml
+@@ -33,7 +33,17 @@ services:
+       UPLOADS_DIR: /data/uploads
+     volumes:
+       - uploads:/data/uploads
+-      - ../backend/firebase-service-account.json:/app/firebase-service-account.json:ro
++      # Si el archivo no existe, compose avisa con un error claro (con la
++      # sintaxis corta Docker crearia una CARPETA con ese nombre y fallaria).
++      # Alternativa sin archivo: variable FIREBASE_CREDENTIALS_JSON en backend/.env
++      - type: bind
++        source: ../backend/firebase-service-account.json
++        target: /app/firebase-service-account.json
++        read_only: true
++        bind:
++          create_host_path: false
++    # SIN "ports": la API solo se alcanza por Caddy (HTTPS). Para probar en
++    # tu red local usa tambien docker-compose.local.yml (ver docs/DESPLIEGUE.md).
+     depends_on:
+       db:
+         condition: service_healthy
+@@ -57,4 +67,4 @@ volumes:
+   pgdata:
+   uploads:
+   caddy_data:
+-  caddy_config:
+\ No newline at end of file
++  caddy_config:
+diff --git a/docs/DESPLIEGUE.md b/docs/DESPLIEGUE.md
+index 48325f4..f8cf958 100644
+--- a/docs/DESPLIEGUE.md
++++ b/docs/DESPLIEGUE.md
+@@ -80,6 +80,29 @@ Prográmalas con `cron` y guarda los archivos **fuera** del servidor.
+    el disco no le deja escribir, la app responderá "No pudimos guardar la foto"). Mientras tanto,
+    los packs sin foto muestran su ícono.
+ 
++## Probar en tu computadora o red local
++
++El `docker-compose.yml` **no** expone la API directamente: solo Caddy (HTTPS) es público, para que
++nadie pueda saltarse el cifrado entrando por `http://IP:8000`. Para probar con el emulador o un
++teléfono en tu red, agrega el archivo de pruebas, que sí abre el puerto 8000:
++
++```bash
++docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
++```
++
++**Nunca** lo uses en el servidor de producción.
++
++## Después de actualizar el código con una base de datos que ya tiene datos
++
++Cuando una versión agrega columnas nuevas, ejecuta una vez:
++
++```bash
++docker compose exec app python migrate.py
++```
++
++(Es seguro repetirlo.) La versión que agregó el inicio de sesión con Google y el cierre de sesiones
++necesita esto. Las sesiones que ya estaban abiertas siguen funcionando.
++
+ ## Lista de comprobación después de desplegar
+ 
+ - [ ] `https://TU-DOMINIO/api/health` responde `healthy`.
+@@ -97,6 +120,6 @@ Prográmalas con `cron` y guarda los archivos **fuera** del servidor.
+ - **Límites de intentos** (login: 5 fallos por cuenta y 30 por IP cada 15 min; códigos de
+   recuperación: 10 por IP por hora) viven en la memoria de cada proceso. Con un solo proceso, que
+   es lo configurado, funcionan exacto; si algún día usas varios, conviene moverlos a Redis.
+-- **Cambiar la contraseña no cierra las sesiones que ya estaban abiertas**; vencen solas.
++- **Cambiar la contraseña, o vincular una cuenta existente con Google, cierra todas las sesiones abiertas** de esa cuenta.
+ - El `Dockerfile` y el `docker-compose.yml` **no se pudieron probar** al prepararlos (no había
+   Docker disponible). Si algo falla al levantarlos, revisa `docker compose logs app`.
+diff --git a/docs/PUBLICAR_ANDROID.md b/docs/PUBLICAR_ANDROID.md
+index fddf750..9fbdf64 100644
+--- a/docs/PUBLICAR_ANDROID.md
++++ b/docs/PUBLICAR_ANDROID.md
+@@ -85,6 +85,28 @@ Ambos archivos ya están en el `.gitignore`. **Haz una copia de seguridad fuera
+ (si la pierdes, subir actualizaciones se vuelve un trámite con Google). Activa **Play App
+ Signing** cuando la consola te lo ofrezca.
+ 
++## 4b. ⚠️ Inicio de sesión con Google (huellas SHA-1)
++
++Google Sign-In funciona en tu teléfono de pruebas pero **falla en la versión de la tienda** si
++Firebase no conoce la huella de la llave con la que se firmó. Registra **tres** huellas SHA-1 en
++Firebase (Configuración del proyecto → tu app Android → *Agregar huella digital*):
++
++1. **Depuración:** `cd mobile/android && ./gradlew signingReport`.
++2. **Tu llave de subida:** `keytool -list -v -keystore upload-keystore.jks -alias upload`.
++3. **La de Play App Signing:** en Play Console, en la sección de *Integridad de la app → Firma de
++   apps*, copia el SHA-1 del *certificado de firma de la app*. Es la que se usa en los teléfonos de
++   los usuarios y solo la verás después de subir tu primera versión.
++
++Después descarga el `google-services.json` nuevo y reemplázalo. En Firebase → Authentication →
++Método de acceso, el proveedor **Google** debe estar habilitado. (Los nombres de los menús pueden
++variar un poco.)
++
++- Error `10` o `DEVELOPER_ERROR` → falta una huella SHA-1.
++- Si en Android aparece un error que menciona `serverClientId`, pásale el *ID de cliente web* (en
++  Firebase → Authentication → Google → configuración del SDK web) a
++  `GoogleSignIn.instance.initialize(...)` en `google_auth_service.dart`. Es lo único de esta parte
++  que no se pudo comprobar al prepararla.
++
+ ## 5. Generar la versión de lanzamiento
+ 
+ ```bash
+@@ -112,6 +134,7 @@ Cada vez que subas una versión, aumenta el número tras el `+` en `version:` de
+ | Dato | ¿Recopilado? | Detalle |
+ |---|---|---|
+ | Nombre y correo | Sí | Cuenta. Se muestra al negocio donde reservas. El correo se comparte con Resend solo para enviar el código de recuperación. |
++| Cuenta de Google (opcional) | Sí | Nombre, correo e identificador, a través de Firebase Authentication. Se borran al eliminar la cuenta. |
+ | Ubicación | No | Se usa solo en el teléfono, no sale del dispositivo. |
+ | Fotos | Sí (negocios) | Las fotos de los packs. |
+ | Identificador de dispositivo | Sí | Token de notificaciones (Firebase). |
+@@ -141,4 +164,8 @@ Lo que cambia respecto a Android:
+ - **Privacidad de la App Store** ("etiquetas de privacidad"): se llena con la misma tabla de arriba.
+ - **Eliminar cuenta dentro de la app:** Apple también lo exige; ya está hecho.
+ - **Cuenta de prueba** para los revisores de Apple y TestFlight para las pruebas.
+-- Apple **no** exige "Iniciar sesión con Apple" mientras no ofrezcas login con Google o Facebook.
++- ⚠️ **Como ofreces inicio de sesión con Google**, la regla 4.8 de la App Store pide ofrecer también
++  «Iniciar sesión con Apple» u otra opción equivalente en privacidad. Revisa el texto vigente de
++  esa regla antes de enviar la app; es lo más probable que te hagan agregar.
++- Google Sign-In en iOS necesita el archivo `GoogleService-Info.plist` y el `REVERSED_CLIENT_ID`
++  como *URL scheme* en `ios/Runner/Info.plist`.
+diff --git a/mobile/lib/pages/login_page.dart b/mobile/lib/pages/login_page.dart
+index 1667035..7f441eb 100644
+--- a/mobile/lib/pages/login_page.dart
++++ b/mobile/lib/pages/login_page.dart
+@@ -1,4 +1,5 @@
+ import 'package:flutter/material.dart';
++import 'package:url_launcher/url_launcher.dart';
+ 
+ import '../models/user.dart';
+ import '../services/api_service.dart';
+@@ -78,6 +79,71 @@ class _LoginPageState extends State<LoginPage> {
+     }
+   }
+ 
++  /// Pregunta si la cuenta nueva es de cliente o de negocio.
++  /// Devuelve true = negocio, false = cliente, null = cancelo.
++  Future<bool?> _askRole() {
++    Future<void> open(String url) =>
++        launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
++
++    return showDialog<bool>(
++      context: context,
++      barrierDismissible: false,
++      builder: (dialogContext) {
++        return AlertDialog(
++          shape: RoundedRectangleBorder(
++            borderRadius: BorderRadius.circular(24),
++          ),
++          title: const Text('¿Cómo vas a usar Rescate?'),
++          content: Column(
++            mainAxisSize: MainAxisSize.min,
++            crossAxisAlignment: CrossAxisAlignment.stretch,
++            children: [
++              const Text(
++                'Elige el tipo de cuenta. No podrás cambiarlo después.',
++              ),
++              const SizedBox(height: 16),
++              FilledButton.icon(
++                onPressed: () => Navigator.pop(dialogContext, false),
++                icon: const Icon(Icons.shopping_bag_outlined),
++                label: const Text('Soy cliente'),
++              ),
++              const SizedBox(height: 10),
++              OutlinedButton.icon(
++                onPressed: () => Navigator.pop(dialogContext, true),
++                icon: const Icon(Icons.storefront_outlined),
++                label: const Text('Soy un negocio'),
++              ),
++              const SizedBox(height: 14),
++              Text(
++                'Al continuar aceptas los términos y condiciones y la '
++                'política de privacidad.',
++                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
++              ),
++              Wrap(
++                children: [
++                  TextButton(
++                    onPressed: () => open(ApiService.termsUrl),
++                    child: const Text('Ver términos'),
++                  ),
++                  TextButton(
++                    onPressed: () => open(ApiService.privacyUrl),
++                    child: const Text('Ver privacidad'),
++                  ),
++                ],
++              ),
++            ],
++          ),
++          actions: [
++            TextButton(
++              onPressed: () => Navigator.pop(dialogContext, null),
++              child: const Text('Cancelar'),
++            ),
++          ],
++        );
++      },
++    );
++  }
++
+   Future<void> _loginWithGoogle() async {
+     if (_isLoading || _isGoogleLoading) return;
+ 
+@@ -90,9 +156,30 @@ class _LoginPageState extends State<LoginPage> {
+       final firebaseIdToken =
+           await GoogleAuthService.instance.signInAndGetIdToken();
+ 
+-      final User user = await _apiService.loginWithGoogle(
+-        idToken: firebaseIdToken,
+-      );
++      User user;
++
++      try {
++        user = await _apiService.loginWithGoogle(idToken: firebaseIdToken);
++      } catch (e) {
++        if (!e.toString().contains('ROLE_REQUIRED')) rethrow;
++
++        // Cuenta nueva: se pregunta el tipo y se reutiliza el mismo token.
++        final isBusiness = await _askRole();
++
++        if (isBusiness == null) {
++          await GoogleAuthService.instance.signOut();
++
++          if (!mounted) return;
++
++          setState(() => _isGoogleLoading = false);
++          return;
++        }
++
++        user = await _apiService.loginWithGoogle(
++          idToken: firebaseIdToken,
++          isBusiness: isBusiness,
++        );
++      }
+ 
+       await _sessionService.saveUser(user);
+       await NotificationService().syncTokenAfterLogin();
+diff --git a/mobile/lib/pages/profile_page.dart b/mobile/lib/pages/profile_page.dart
+index 5a34142..680eb17 100644
+--- a/mobile/lib/pages/profile_page.dart
++++ b/mobile/lib/pages/profile_page.dart
+@@ -54,7 +54,8 @@ class ProfilePage extends StatelessWidget {
+                     'Esta acción es permanente. Borraremos tu nombre, '
+                     'correo y datos de contacto, y no podrás volver a '
+                     'entrar con esta cuenta.\n\n'
+-                    'Escribe tu contraseña para confirmar.',
++                    'Escribe tu contraseña para confirmar. Si entraste '
++                    'con Google, confírmalo con tu cuenta de Google.',
+                   ),
+                   const SizedBox(height: 14),
+                   TextField(
+@@ -67,6 +68,42 @@ class ProfilePage extends StatelessWidget {
+                       errorMaxLines: 4,
+                     ),
+                   ),
++                  const SizedBox(height: 8),
++                  TextButton.icon(
++                    onPressed: loading
++                        ? null
++                        : () async {
++                            setState(() {
++                              loading = true;
++                              error = null;
++                            });
++
++                            try {
++                              // Se pide elegir la cuenta de Google otra vez:
++                              // confirma que sigues siendo tu.
++                              final idToken = await GoogleAuthService.instance
++                                  .signInAndGetIdToken();
++
++                              await ApiService()
++                                  .deleteAccount(idToken: idToken);
++
++                              await GoogleAuthService.instance.signOut();
++
++                              if (dialogContext.mounted) {
++                                Navigator.pop(dialogContext, true);
++                              }
++                            } catch (e) {
++                              setState(() {
++                                loading = false;
++                                error = e
++                                    .toString()
++                                    .replaceFirst('Exception: ', '');
++                              });
++                            }
++                          },
++                    icon: const Icon(Icons.account_circle_outlined),
++                    label: const Text('Confirmar con Google'),
++                  ),
+                 ],
+               ),
+               actions: [
+@@ -96,8 +133,9 @@ class ProfilePage extends StatelessWidget {
+                           });
+ 
+                           try {
+-                            await ApiService()
+-                                .deleteAccount(passwordController.text);
++                            await ApiService().deleteAccount(
++                              password: passwordController.text,
++                            );
+ 
+                             if (dialogContext.mounted) {
+                               Navigator.pop(dialogContext, true);
+diff --git a/mobile/lib/pages/register_page.dart b/mobile/lib/pages/register_page.dart
+index 987e710..1c6795f 100644
+--- a/mobile/lib/pages/register_page.dart
++++ b/mobile/lib/pages/register_page.dart
+@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
+ 
+ import '../models/user.dart';
+ import '../services/api_service.dart';
++import '../services/google_auth_service.dart';
+ import '../services/notification_service.dart';
+ import '../services/session_service.dart';
+ import 'business_home_page.dart';
+@@ -31,6 +32,7 @@ class _RegisterPageState extends State<RegisterPage> {
+   bool _obscureConfirmPassword = true;
+   bool _isBusiness = false;
+   bool _acceptedTerms = false;
++  bool _isGoogleLoading = false;
+   String? _errorMessage;
+ 
+   @override
+@@ -94,6 +96,56 @@ class _RegisterPageState extends State<RegisterPage> {
+     }
+   }
+ 
++  Future<void> _registerWithGoogle() async {
++    if (_isLoading || _isGoogleLoading) return;
++
++    if (!_acceptedTerms) {
++      setState(() {
++        _errorMessage =
++            'Debes aceptar los términos y la política de privacidad para crear tu cuenta.';
++      });
++      return;
++    }
++
++    setState(() {
++      _isGoogleLoading = true;
++      _errorMessage = null;
++    });
++
++    try {
++      final firebaseIdToken =
++          await GoogleAuthService.instance.signInAndGetIdToken();
++
++      // Aqui el rol ya esta elegido con el interruptor "Soy un negocio".
++      // Si la cuenta de Google ya existia, el servidor lo ignora.
++      final User user = await _apiService.loginWithGoogle(
++        idToken: firebaseIdToken,
++        isBusiness: _isBusiness,
++      );
++
++      await _sessionService.saveUser(user);
++      await NotificationService().syncTokenAfterLogin();
++
++      if (!mounted) return;
++
++      Navigator.of(context).pushAndRemoveUntil(
++        MaterialPageRoute<void>(
++          builder: (_) => user.isBusiness
++              ? BusinessHomePage(user: user)
++              : HomePage(user: user),
++        ),
++        (route) => false,
++      );
++    } catch (e) {
++      if (!mounted) return;
++
++      setState(() {
++        _isGoogleLoading = false;
++        _errorMessage = e.toString().replaceFirst('Exception: ', '');
++      });
++    }
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     final primaryColor = Theme.of(context).colorScheme.primary;
+@@ -405,7 +457,8 @@ class _RegisterPageState extends State<RegisterPage> {
+                 SizedBox(
+                   height: 56,
+                   child: FilledButton(
+-                    onPressed: _isLoading ? null : _register,
++                    onPressed:
++                        (_isLoading || _isGoogleLoading) ? null : _register,
+                     child: _isLoading
+                         ? const SizedBox(
+                             width: 24,
+@@ -424,6 +477,49 @@ class _RegisterPageState extends State<RegisterPage> {
+                           ),
+                   ),
+                 ),
++
++                const SizedBox(height: 16),
++
++                Row(
++                  children: [
++                    Expanded(child: Divider(color: Colors.grey.shade300)),
++                    Padding(
++                      padding: const EdgeInsets.symmetric(horizontal: 12),
++                      child: Text(
++                        'o',
++                        style: TextStyle(color: Colors.grey.shade600),
++                      ),
++                    ),
++                    Expanded(child: Divider(color: Colors.grey.shade300)),
++                  ],
++                ),
++
++                const SizedBox(height: 16),
++
++                SizedBox(
++                  height: 54,
++                  child: OutlinedButton.icon(
++                    onPressed: (_isLoading || _isGoogleLoading)
++                        ? null
++                        : _registerWithGoogle,
++                    icon: _isGoogleLoading
++                        ? const SizedBox(
++                            width: 20,
++                            height: 20,
++                            child: CircularProgressIndicator(strokeWidth: 2),
++                          )
++                        : const Icon(Icons.account_circle_outlined),
++                    label: Text(
++                      _isGoogleLoading
++                          ? 'Conectando con Google...'
++                          : 'Registrarme con Google',
++                      style: const TextStyle(
++                        fontSize: 16,
++                        fontWeight: FontWeight.w600,
++                      ),
++                    ),
++                  ),
++                ),
+               ],
+             ),
+           ),
+diff --git a/mobile/lib/services/api_service.dart b/mobile/lib/services/api_service.dart
+index 971d0bc..f835fe7 100644
+--- a/mobile/lib/services/api_service.dart
++++ b/mobile/lib/services/api_service.dart
+@@ -84,6 +84,26 @@ class ApiService {
+     throw Exception(message);
+   }
+ 
++  /// Lanza el mensaje que manda el servidor. A diferencia de [_handleError],
++  /// NO trata el 401 como "sesion expirada": en el login un 401 significa
++  /// "correo o contrasena incorrectos".
++  Never _throwServerMessage(http.Response response) {
++    String message = 'Error del servidor (${response.statusCode})';
++
++    try {
++      final body = jsonDecode(response.body) as Map<String, dynamic>;
++      final detail = body['detail'];
++
++      if (detail != null && detail.toString().isNotEmpty) {
++        message = detail.toString();
++      }
++    } catch (_) {
++      // dejamos el mensaje generico
++    }
++
++    throw Exception(message);
++  }
++
+   // -------------------------------------------------
+   // AUTH
+   // -------------------------------------------------
+@@ -102,7 +122,7 @@ class ApiService {
+     );
+ 
+     if (response.statusCode != 200) {
+-      _handleError(response);
++      _throwServerMessage(response);
+     }
+ 
+     final body = jsonDecode(response.body) as Map<String, dynamic>;
+@@ -115,19 +135,25 @@ class ApiService {
+     return user;
+   }
+ 
++  /// Inicia sesion (o crea la cuenta) con un ID token de Firebase.
++  ///
++  /// Si la cuenta es nueva y [isBusiness] es null, el servidor responde
++  /// "ROLE_REQUIRED" y la pantalla debe preguntar si es cliente o negocio.
+   Future<User> loginWithGoogle({
+     required String idToken,
++    bool? isBusiness,
+   }) async {
+     final response = await http.post(
+       Uri.parse('$baseUrl/api/auth/google'),
+       headers: await _headers(withAuth: false),
+       body: jsonEncode({
+         'id_token': idToken,
++        if (isBusiness != null) 'is_business': isBusiness,
+       }),
+     );
+ 
+     if (response.statusCode != 200) {
+-      _handleError(response);
++      _throwServerMessage(response);
+     }
+ 
+     final body = jsonDecode(response.body) as Map<String, dynamic>;
+@@ -201,7 +227,7 @@ class ApiService {
+   Future<Map<String, dynamic>> createReservation({
+     required int foodPackId,
+     required int quantity,
+-    String paymentMethod = 'online',
++    String paymentMethod = 'cash',
+   }) async {
+     final response = await http.post(
+       Uri.parse('$baseUrl/api/reservations'),
+@@ -607,11 +633,17 @@ class ApiService {
+ 
+   /// Elimina la cuenta del usuario actual (pide su contrasena).
+   /// Si sale bien, tambien cierra la sesion guardada en el telefono.
+-  Future<void> deleteAccount(String password) async {
++  Future<void> deleteAccount({
++    String password = '',
++    String? idToken,
++  }) async {
+     final response = await http.post(
+       Uri.parse('$baseUrl/api/auth/delete-account'),
+       headers: await _headers(),
+-      body: jsonEncode({'password': password}),
++      body: jsonEncode({
++        'password': password,
++        if (idToken != null) 'id_token': idToken,
++      }),
+     );
+ 
+     if (response.statusCode != 200) {

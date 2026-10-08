@@ -54,7 +54,8 @@ class ProfilePage extends StatelessWidget {
                     'Esta acción es permanente. Borraremos tu nombre, '
                     'correo y datos de contacto, y no podrás volver a '
                     'entrar con esta cuenta.\n\n'
-                    'Escribe tu contraseña para confirmar.',
+                    'Escribe tu contraseña para confirmar. Si entraste '
+                    'con Google, confírmalo con tu cuenta de Google.',
                   ),
                   const SizedBox(height: 14),
                   TextField(
@@ -66,6 +67,42 @@ class ProfilePage extends StatelessWidget {
                       errorText: error,
                       errorMaxLines: 4,
                     ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: loading
+                        ? null
+                        : () async {
+                            setState(() {
+                              loading = true;
+                              error = null;
+                            });
+
+                            try {
+                              // Se pide elegir la cuenta de Google otra vez:
+                              // confirma que sigues siendo tu.
+                              final idToken = await GoogleAuthService.instance
+                                  .signInAndGetIdToken();
+
+                              await ApiService()
+                                  .deleteAccount(idToken: idToken);
+
+                              await GoogleAuthService.instance.signOut();
+
+                              if (dialogContext.mounted) {
+                                Navigator.pop(dialogContext, true);
+                              }
+                            } catch (e) {
+                              setState(() {
+                                loading = false;
+                                error = e
+                                    .toString()
+                                    .replaceFirst('Exception: ', '');
+                              });
+                            }
+                          },
+                    icon: const Icon(Icons.account_circle_outlined),
+                    label: const Text('Confirmar con Google'),
                   ),
                 ],
               ),
@@ -96,8 +133,9 @@ class ProfilePage extends StatelessWidget {
                           });
 
                           try {
-                            await ApiService()
-                                .deleteAccount(passwordController.text);
+                            await ApiService().deleteAccount(
+                              password: passwordController.text,
+                            );
 
                             if (dialogContext.mounted) {
                               Navigator.pop(dialogContext, true);

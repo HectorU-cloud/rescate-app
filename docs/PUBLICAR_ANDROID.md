@@ -85,6 +85,28 @@ Ambos archivos ya están en el `.gitignore`. **Haz una copia de seguridad fuera 
 (si la pierdes, subir actualizaciones se vuelve un trámite con Google). Activa **Play App
 Signing** cuando la consola te lo ofrezca.
 
+## 4b. ⚠️ Inicio de sesión con Google (huellas SHA-1)
+
+Google Sign-In funciona en tu teléfono de pruebas pero **falla en la versión de la tienda** si
+Firebase no conoce la huella de la llave con la que se firmó. Registra **tres** huellas SHA-1 en
+Firebase (Configuración del proyecto → tu app Android → *Agregar huella digital*):
+
+1. **Depuración:** `cd mobile/android && ./gradlew signingReport`.
+2. **Tu llave de subida:** `keytool -list -v -keystore upload-keystore.jks -alias upload`.
+3. **La de Play App Signing:** en Play Console, en la sección de *Integridad de la app → Firma de
+   apps*, copia el SHA-1 del *certificado de firma de la app*. Es la que se usa en los teléfonos de
+   los usuarios y solo la verás después de subir tu primera versión.
+
+Después descarga el `google-services.json` nuevo y reemplázalo. En Firebase → Authentication →
+Método de acceso, el proveedor **Google** debe estar habilitado. (Los nombres de los menús pueden
+variar un poco.)
+
+- Error `10` o `DEVELOPER_ERROR` → falta una huella SHA-1.
+- Si en Android aparece un error que menciona `serverClientId`, pásale el *ID de cliente web* (en
+  Firebase → Authentication → Google → configuración del SDK web) a
+  `GoogleSignIn.instance.initialize(...)` en `google_auth_service.dart`. Es lo único de esta parte
+  que no se pudo comprobar al prepararla.
+
 ## 5. Generar la versión de lanzamiento
 
 ```bash
@@ -112,6 +134,7 @@ Cada vez que subas una versión, aumenta el número tras el `+` en `version:` de
 | Dato | ¿Recopilado? | Detalle |
 |---|---|---|
 | Nombre y correo | Sí | Cuenta. Se muestra al negocio donde reservas. El correo se comparte con Resend solo para enviar el código de recuperación. |
+| Cuenta de Google (opcional) | Sí | Nombre, correo e identificador, a través de Firebase Authentication. Se borran al eliminar la cuenta. |
 | Ubicación | No | Se usa solo en el teléfono, no sale del dispositivo. |
 | Fotos | Sí (negocios) | Las fotos de los packs. |
 | Identificador de dispositivo | Sí | Token de notificaciones (Firebase). |
@@ -141,4 +164,8 @@ Lo que cambia respecto a Android:
 - **Privacidad de la App Store** ("etiquetas de privacidad"): se llena con la misma tabla de arriba.
 - **Eliminar cuenta dentro de la app:** Apple también lo exige; ya está hecho.
 - **Cuenta de prueba** para los revisores de Apple y TestFlight para las pruebas.
-- Apple **no** exige "Iniciar sesión con Apple" mientras no ofrezcas login con Google o Facebook.
+- ⚠️ **Como ofreces inicio de sesión con Google**, la regla 4.8 de la App Store pide ofrecer también
+  «Iniciar sesión con Apple» u otra opción equivalente en privacidad. Revisa el texto vigente de
+  esa regla antes de enviar la app; es lo más probable que te hagan agregar.
+- Google Sign-In en iOS necesita el archivo `GoogleService-Info.plist` y el `REVERSED_CLIENT_ID`
+  como *URL scheme* en `ios/Runner/Info.plist`.

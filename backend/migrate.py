@@ -49,6 +49,13 @@ def migrate():
         """))
         print("✅ users.auth_provider")
 
+        # Version de sesion: permite cerrar todas las sesiones de una cuenta.
+        conn.execute(text("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0 NOT NULL
+        """))
+        print("✅ users.token_version")
+
         # 👇 NUEVA COLUMNA
         conn.execute(text("""
             ALTER TABLE reservations
