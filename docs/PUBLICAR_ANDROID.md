@@ -35,19 +35,28 @@ La app no sirve en la tienda si el backend solo está en tu PC.
 - Ya están hechos: CORS cerrado por defecto, `/api/health` sin detalles internos y límite de
   intentos de login.
 
-## 2. ⚠️ Cambiar el identificador de la app (permanente)
+## 2. ⚠️ Identificador de la app (permanente)
 
-Hoy es `com.example.mobile`. **Google Play rechaza `com.example.*`** y, una vez subida la primera
-versión, **ya no se puede cambiar**. Elige uno propio, por ejemplo `ec.tudominio.rescate`.
+El identificador de la app es **`com.vectora.rescate`** (Android y iOS). Google Play rechaza
+`com.example.*` y, una vez subida la primera versión, **ya no se puede cambiar**. Si quieres otro,
+cámbialo ahora, antes de subir nada a Play.
 
-Hazlo todo junto, o el build falla:
+Ya está aplicado en el código (`namespace`, `applicationId`, la carpeta de `MainActivity.kt`, el
+*Bundle ID* de iOS y el `userAgentPackageName` del mapa). Lo que **te toca a ti** es lo de Firebase,
+porque `google-services.json` está atado al identificador:
 
-1. En Firebase Console: agrega una app Android nueva con el identificador nuevo y descarga su
-   `google-services.json` → reemplaza `mobile/android/app/google-services.json`.
-2. En `mobile/android/app/build.gradle.kts` cambia `namespace` y `applicationId`.
-3. Mueve `android/app/src/main/kotlin/com/example/mobile/MainActivity.kt` a la carpeta del
-   nuevo paquete y cambia su primera línea `package ...`.
-4. `flutter clean` y prueba que compile y que lleguen notificaciones.
+1. En Firebase Console → Configuración del proyecto → *Agregar app* → Android, con el paquete
+   `com.vectora.rescate`. Agrega también las huellas SHA-1 (ver sección 4b).
+2. Descarga su `google-services.json` y reemplaza `mobile/android/app/google-services.json`.
+3. Desinstala del teléfono la versión anterior (`com.example.mobile`): para Android son dos apps
+   distintas.
+4. `flutter clean` y `flutter run`. Comprueba que compile, que entre con Google y que lleguen
+   notificaciones.
+
+> Hasta que reemplaces el `google-services.json`, la compilación falla con un error parecido a
+> *"No matching client found for package name 'com.vectora.rescate'"*. Es lo esperado.
+
+Para iOS, cuando llegues ahí, crea también una app iOS en Firebase con ese mismo *Bundle ID*.
 
 ## 3. Icono y nombre
 

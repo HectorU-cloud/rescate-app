@@ -421,7 +421,7 @@ class _MapPageState extends State<MapPage> {
             TileLayer(
               urlTemplate:
                   'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.example.mobile',
+              userAgentPackageName: 'com.vectora.rescate',
             ),
 
             // Pin del usuario

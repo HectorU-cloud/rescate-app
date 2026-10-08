@@ -33,9 +33,7 @@ services:
       UPLOADS_DIR: /data/uploads
     volumes:
       - uploads:/data/uploads
-      - ../backend/firebase-service-account.json:/app/firebase-service-account.json:ro 
-    ports:
-      - "8000:8000" 
+      - ../backend/firebase-service-account.json:/app/firebase-service-account.json:ro
     depends_on:
       db:
         condition: service_healthy

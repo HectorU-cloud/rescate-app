@@ -19,7 +19,7 @@ if (hasReleaseKey) {
 }
 
 android {
-    namespace = "com.example.mobile"
+    namespace = "com.vectora.rescate"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -31,7 +31,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.mobile"
+        applicationId = "com.vectora.rescate"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

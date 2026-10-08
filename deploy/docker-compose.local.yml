@@ -1,0 +1,12 @@
+# Override SOLO para desarrollo local.
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# Expone el puerto 8000 para que tu celular o emulador puedan
+# alcanzar la API directamente (sin pasar por Caddy).
+# NUNCA uses este archivo en producción.
+
+services:
+  app:
+    ports:
+      - "8000:8000"
