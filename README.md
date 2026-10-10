@@ -17,6 +17,7 @@ App móvil para **rescatar comida** en Ecuador: panaderías, cafeterías y resta
 - Notificaciones push (Firebase)
 - Buscador y filtros por categoría
 - Fotos de los packs (el negocio las sube desde su galería)
+- Tour de bienvenida para clientes nuevos (se puede repetir desde Perfil → Ver tutorial)
 - Registro e inicio de sesión con Google (cliente o negocio), además del correo y contraseña
 - Recuperar contraseña con un código de 6 dígitos enviado por correo (Resend)
 - Eliminar cuenta desde la app (requisito de Google Play y App Store) y páginas públicas `/privacy`, `/terms` y `/account-deletion`

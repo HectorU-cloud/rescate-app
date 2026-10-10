@@ -10,9 +10,13 @@ import 'login_page.dart';
 class ProfilePage extends StatelessWidget {
   final User user;
 
+  /// Si viene, se muestra "Ver tutorial" para repetir el recorrido de Inicio.
+  final VoidCallback? onReplayTour;
+
   const ProfilePage({
     super.key,
     required this.user,
+    this.onReplayTour,
   });
 
   Future<void> _openUrl(BuildContext context, String url) async {
@@ -359,9 +363,14 @@ class ProfilePage extends StatelessWidget {
           const SizedBox(height: 24),
 
           // Legales
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          Wrap(
+            alignment: WrapAlignment.center,
             children: [
+              if (onReplayTour != null)
+                TextButton(
+                  onPressed: onReplayTour,
+                  child: const Text('Ver tutorial'),
+                ),
               TextButton(
                 onPressed: () =>
                     _openUrl(context, ApiService.termsUrl),

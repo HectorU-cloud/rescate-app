@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 
 import '../models/food_pack.dart';
 import '../models/reservation.dart';
 import '../services/api_service.dart';
+import '../services/tour_service.dart';
 import '../widgets/food_pack_card.dart';
 import 'my_rescues_page.dart';
 import 'pack_detail_page.dart';
@@ -36,6 +38,19 @@ class _HomePageState extends State<HomePage> {
   String _searchQuery = '';
   String? _selectedCategory;
 
+  // ----- Tour de bienvenida -----
+  final TourService _tourService = TourService();
+  final GlobalKey _searchKey = GlobalKey();
+  final GlobalKey _categoriesKey = GlobalKey();
+  final GlobalKey _firstPackKey = GlobalKey();
+  final GlobalKey _mapTabKey = GlobalKey();
+  final GlobalKey _rescuesTabKey = GlobalKey();
+
+  // true cuando ya se decidio (lo vio antes, o ya se le mostro) en esta sesion
+  bool _tourChecked = false;
+  bool _tourScheduling = false;
+  TutorialCoachMark? _tour;
+
   @override
   void initState() {
     super.initState();
@@ -44,6 +59,12 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    try {
+      _tour?.skip();
+    } catch (_) {
+      // el overlay ya no existe: nada que cerrar
+    }
+
     _searchController.dispose();
     super.dispose();
   }
@@ -121,6 +142,8 @@ class _HomePageState extends State<HomePage> {
         _packs = packs;
         _isLoading = false;
       });
+
+      _scheduleTourIfNeeded();
     } catch (e) {
       if (!mounted) return;
 
@@ -130,6 +153,286 @@ class _HomePageState extends State<HomePage> {
             'No pudimos cargar los packs disponibles.';
       });
     }
+  }
+
+  // =================================================
+  // TOUR DE BIENVENIDA (tutorial_coach_mark)
+  // =================================================
+
+  /// Si la cuenta nunca vio el tour, lo muestra cuando ya cargaron los packs.
+  void _scheduleTourIfNeeded() {
+    if (_tourChecked || _tourScheduling) return;
+
+    _tourScheduling = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        if (!mounted) return;
+
+        final seen = await _tourService.hasSeen(widget.user.id);
+
+        if (!mounted) return;
+
+        if (seen) {
+          _tourChecked = true;
+          return;
+        }
+
+        // Pausa corta para que termine de pintarse la pantalla.
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+
+        if (!mounted) return;
+
+        _startTour();
+      } finally {
+        _tourScheduling = false;
+      }
+    });
+  }
+
+  /// Repite el tour a pedido (boton "Ver tutorial" en Perfil).
+  Future<void> _replayTour() async {
+    setState(() {
+      _currentIndex = 0;
+    });
+
+    // Al volver a Inicio se recargan los packs; esperamos a que terminen
+    // para que la tarjeta de ejemplo exista.
+    await _loadPacks();
+
+    if (!mounted) return;
+
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+
+    if (!mounted) return;
+
+    _startTour();
+  }
+
+  void _onTourEnded() {
+    _tour = null;
+  }
+
+  /// Devuelve true si el tour se mostro.
+  bool _startTour() {
+    if (!mounted || _currentIndex != 0) return false;
+
+    final steps = _buildTourSteps();
+
+    // Con menos de 2 pasos no vale la pena; se reintenta mas tarde sin
+    // marcarlo como visto.
+    if (steps.length < 2) return false;
+
+    final targets = <TargetFocus>[];
+
+    for (var i = 0; i < steps.length; i++) {
+      final step = steps[i];
+
+      targets.add(
+        TargetFocus(
+          identify: step.id,
+          keyTarget: step.key,
+          shape: ShapeLightFocus.RRect,
+          radius: step.radius,
+          enableOverlayTab: true,
+          contents: [
+            TargetContent(
+              align: step.align,
+              child: _tourBubble(
+                title: step.title,
+                text: step.text,
+                position: i + 1,
+                total: steps.length,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    try {
+      _tour = TutorialCoachMark(
+        targets: targets,
+        colorShadow: const Color(0xFF042F2E),
+        opacityShadow: 0.9,
+        paddingFocus: 8,
+        textSkip: 'SALTAR',
+        alignSkip: Alignment.topRight,
+        textStyleSkip: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+          fontSize: 15,
+        ),
+        onFinish: _onTourEnded,
+        onSkip: () {
+          _onTourEnded();
+          return true;
+        },
+      )..show(context: context);
+
+      // Se marca como visto al MOSTRARLO, no al terminarlo: si alguien lo cierra
+      // con el boton "atras", no reaparece solo. Puede repetirlo desde Perfil.
+      _tourChecked = true;
+      _tourService.markSeen(widget.user.id);
+
+      return true;
+    } catch (_) {
+      // Si algun elemento no se pudo ubicar, el tour no debe romper la app.
+      _tour = null;
+      return false;
+    }
+  }
+
+  /// Pasos del tour. Solo entran los elementos que existen y se ven de
+  /// verdad en pantalla en este momento.
+  List<_TourStep> _buildTourSteps() {
+    final candidates = <_TourStep>[
+      _TourStep(
+        id: 'buscador',
+        key: _searchKey,
+        title: 'Busca lo que se te antoje',
+        text:
+            'Escribe el nombre de un pack o de un negocio y te mostramos '
+            'solo lo que coincide.',
+        radius: 30,
+      ),
+      _TourStep(
+        id: 'categorias',
+        key: _categoriesKey,
+        title: 'Elige una categoría',
+        text:
+            'Toca panadería, cafetería, pizza... para filtrar. Tócala otra '
+            'vez para quitar el filtro.',
+        radius: 18,
+      ),
+      _TourStep(
+        id: 'pack',
+        key: _firstPackKey,
+        title: 'Esto es un pack',
+        text:
+            'Cada pack muestra el negocio, el precio rebajado, cuántos '
+            'quedan y la hora de retiro. Tócalo para ver el detalle y '
+            'reservar.',
+        radius: 20,
+      ),
+      _TourStep(
+        id: 'mapa',
+        key: _mapTabKey,
+        title: 'Mira qué hay cerca',
+        text:
+            'En el mapa ves los negocios con packs disponibles y a qué '
+            'distancia están de ti.',
+        radius: 20,
+      ),
+      _TourStep(
+        id: 'rescates',
+        key: _rescuesTabKey,
+        title: 'Tus reservas',
+        text:
+            'Aquí está el código QR de cada reserva, para mostrarlo en el '
+            'local cuando vayas a retirar.',
+        radius: 20,
+      ),
+    ];
+
+    return candidates
+        .where((step) => _isVisibleOnScreen(step.key))
+        .map((step) => step.withAlign(_alignFor(step.key)))
+        .toList();
+  }
+
+  /// true si el widget existe y esta entero dentro del area visible
+  /// (sin quedar tapado por la barra inferior).
+  bool _isVisibleOnScreen(GlobalKey key) {
+    final renderObject = key.currentContext?.findRenderObject();
+
+    if (renderObject is! RenderBox ||
+        !renderObject.attached ||
+        !renderObject.hasSize) {
+      return false;
+    }
+
+    final media = MediaQuery.of(context);
+    final top = renderObject.localToGlobal(Offset.zero).dy;
+    final bottom = top + renderObject.size.height;
+
+    // La barra de navegacion mide 80 y se dibuja sobre el contenido.
+    final visibleTop = media.padding.top;
+    final visibleBottom = media.size.height - media.padding.bottom - 80;
+
+    // Los elementos de la propia barra inferior siempre se consideran visibles.
+    final isNavItem = key == _mapTabKey || key == _rescuesTabKey;
+
+    if (isNavItem) return top >= visibleBottom - 1;
+
+    return top >= visibleTop && bottom <= visibleBottom;
+  }
+
+  /// El texto va debajo del elemento si este esta en la mitad de arriba de
+  /// la pantalla, y encima si esta abajo.
+  ContentAlign _alignFor(GlobalKey key) {
+    final renderObject = key.currentContext?.findRenderObject();
+
+    if (renderObject is! RenderBox || !renderObject.hasSize) {
+      return ContentAlign.bottom;
+    }
+
+    final centerY = renderObject.localToGlobal(Offset.zero).dy +
+        renderObject.size.height / 2;
+
+    return centerY > MediaQuery.of(context).size.height / 2
+        ? ContentAlign.top
+        : ContentAlign.bottom;
+  }
+
+  Widget _tourBubble({
+    required String title,
+    required String text,
+    required int position,
+    required int total,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$position de $total',
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          title,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          text,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text(
+          position == total
+              ? 'Toca para terminar'
+              : 'Toca para continuar',
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 13,
+          ),
+        ),
+      ],
+    );
   }
 
   Future<void> _openPack(FoodPack pack) async {
@@ -174,27 +477,29 @@ class _HomePageState extends State<HomePage> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: _onNavigationChanged,
-        destinations: const [
-          NavigationDestination(
+        destinations: [
+          const NavigationDestination(
             icon: Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home),
             label: 'Inicio',
           ),
           NavigationDestination(
-            icon: Icon(Icons.map_outlined),
-            selectedIcon: Icon(Icons.map),
+            key: _mapTabKey,
+            icon: const Icon(Icons.map_outlined),
+            selectedIcon: const Icon(Icons.map),
             label: 'Mapa',
           ),
           NavigationDestination(
-            icon: Icon(
+            key: _rescuesTabKey,
+            icon: const Icon(
               Icons.confirmation_number_outlined,
             ),
-            selectedIcon: Icon(
+            selectedIcon: const Icon(
               Icons.confirmation_number,
             ),
             label: 'Mis Rescates',
           ),
-          NavigationDestination(
+          const NavigationDestination(
             icon: Icon(Icons.person_outline),
             selectedIcon: Icon(Icons.person),
             label: 'Perfil',
@@ -219,6 +524,7 @@ class _HomePageState extends State<HomePage> {
       case 3:
         return ProfilePage(
           user: widget.user,
+          onReplayTour: _replayTour,
         );
 
       default:
@@ -313,6 +619,7 @@ class _HomePageState extends State<HomePage> {
 
               // SEARCH
               TextField(
+                key: _searchKey,
                 controller: _searchController,
                 textInputAction: TextInputAction.search,
                 onChanged: (value) {
@@ -354,6 +661,7 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 14),
 
               SizedBox(
+                key: _categoriesKey,
                 height: 92,
                 child: ListView(
                   scrollDirection:
@@ -584,18 +892,25 @@ class _HomePageState extends State<HomePage> {
     }
 
     return Column(
-      children: packs.map((pack) {
+      children: List.generate(packs.length, (index) {
+        final pack = packs[index];
+
+        final card = FoodPackCard(
+          pack: pack,
+          onTap: () => _openPack(pack),
+        );
+
         return Padding(
           padding:
               const EdgeInsets.only(
             bottom: 14,
           ),
-          child: FoodPackCard(
-            pack: pack,
-            onTap: () => _openPack(pack),
-          ),
+          // La primera tarjeta lleva llave para poder senalarla en el tour.
+          child: index == 0
+              ? KeyedSubtree(key: _firstPackKey, child: card)
+              : card,
         );
-      }).toList(),
+      }),
     );
   }
 
@@ -723,6 +1038,37 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       ),
+    );
+  }
+}
+
+
+/// Un paso del tour de bienvenida.
+class _TourStep {
+  final String id;
+  final GlobalKey key;
+  final String title;
+  final String text;
+  final double radius;
+  final ContentAlign align;
+
+  const _TourStep({
+    required this.id,
+    required this.key,
+    required this.title,
+    required this.text,
+    required this.radius,
+    this.align = ContentAlign.bottom,
+  });
+
+  _TourStep withAlign(ContentAlign newAlign) {
+    return _TourStep(
+      id: id,
+      key: key,
+      title: title,
+      text: text,
+      radius: radius,
+      align: newAlign,
     );
   }
 }
